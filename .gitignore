@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+.idea/
+.helloagents/
+Mods/
+UserData/
+MelonLoader/
+GameAssembly.dll
+global-metadata.dat
