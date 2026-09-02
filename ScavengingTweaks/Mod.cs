@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
@@ -11,9 +12,11 @@ namespace ScavengingTweaks;
 public sealed class Mod : MelonMod
 {
     private const string HarmonyId = "ProbablyStolen.ScavengingTweaks";
+    private const string CounterMigrationMarker = "ScavengingTweaks.counter-migrated-v2";
     private static readonly HashSet<int> ExpandedLocationObjects = new();
     private static MelonPreferences_Entry<int> maxAttempts = null!;
     private static MelonPreferences_Entry<float> highValueMultiplier = null!;
+    private static bool counterMigrationChecked;
 
     public override void OnInitializeMelon()
     {
@@ -45,13 +48,12 @@ public sealed class Mod : MelonMod
     private static void InstallPatches()
     {
         var harmony = new HarmonyLib.Harmony(HarmonyId);
-        Patch(harmony, typeof(ScavHelper), "GetMaxScavAttempts", postfix: nameof(Patches.GetMaxScavAttemptsPostfix));
+        Patch(harmony, typeof(ScavHelper), "GetScavTimeLeft", postfix: nameof(Patches.GetScavTimeLeftPostfix));
+        Patch(harmony, typeof(ScavHelper), "CanScavenge", prefix: nameof(Patches.CanScavengePrefix), postfix: nameof(Patches.CanScavengePostfix));
         Patch(harmony, typeof(ScavHelper), "GetMinorWoundChance", postfix: nameof(Patches.ZeroChancePostfix));
         Patch(harmony, typeof(ScavHelper), "GetMajorWoundChance", postfix: nameof(Patches.ZeroChancePostfix));
         Patch(harmony, typeof(ScavHelper), "RollMinorWound", prefix: nameof(Patches.NeverWoundPrefix));
         Patch(harmony, typeof(ScavHelper), "RollMajorWound", prefix: nameof(Patches.NeverWoundPrefix));
-        Patch(harmony, typeof(ScavHelper), "ResetScavenging", postfix: nameof(Patches.ResetScavengingPostfix));
-        Patch(harmony, typeof(PlayerStore), "BeginDay", postfix: nameof(Patches.BeginDayPostfix));
         Patch(harmony, typeof(ExpeditionLocationList), "DumpingGrounds", postfix: nameof(Patches.DumpingGroundsPostfix));
     }
 
@@ -76,9 +78,72 @@ public sealed class Mod : MelonMod
 
     private static class Patches
     {
-        public static void GetMaxScavAttemptsPostfix(ref int __result)
+        public static void GetScavTimeLeftPostfix(ref int __result)
         {
-            __result = MaxAttempts;
+            try
+            {
+                var store = PlayerStore.instance;
+                if (store == null)
+                {
+                    return;
+                }
+
+                TryMigrateLegacyCounter(store);
+                __result = ScavengingCounter.GetRemainingAttempts(MaxAttempts, store.scavengingAttempts);
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error("ScavengingTweaks could not update the displayed scavenging attempts.", exception);
+            }
+        }
+
+        public static void CanScavengePrefix(ref int __state)
+        {
+            __state = 0;
+            try
+            {
+                var store = PlayerStore.instance;
+                if (store == null)
+                {
+                    return;
+                }
+
+                TryMigrateLegacyCounter(store);
+                var vanillaMaxAttempts = ScavHelper.GetMaxScavAttempts();
+                var adjustment = MaxAttempts - vanillaMaxAttempts;
+                if (adjustment == 0)
+                {
+                    return;
+                }
+
+                store.scavengingAttempts -= adjustment;
+                __state = adjustment;
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error("ScavengingTweaks could not extend the scavenging availability check.", exception);
+            }
+        }
+
+        public static void CanScavengePostfix(int __state)
+        {
+            if (__state == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var store = PlayerStore.instance;
+                if (store != null)
+                {
+                    store.scavengingAttempts += __state;
+                }
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error("ScavengingTweaks could not restore the scavenging counter after checking availability.", exception);
+            }
         }
 
         public static void ZeroChancePostfix(ref float __result)
@@ -90,23 +155,6 @@ public sealed class Mod : MelonMod
         {
             __result = false;
             return false;
-        }
-
-        public static void ResetScavengingPostfix()
-        {
-            try
-            {
-                ApplyConfiguredAttempts(PlayerStore.instance);
-            }
-            catch (Exception exception)
-            {
-                MelonLogger.Error("ScavengingTweaks could not reset the configured scavenging attempts.", exception);
-            }
-        }
-
-        public static void BeginDayPostfix(PlayerStore __instance)
-        {
-            ApplyConfiguredAttempts(__instance);
         }
 
         public static void DumpingGroundsPostfix(ref ExpeditionLocation __result)
@@ -165,11 +213,34 @@ public sealed class Mod : MelonMod
             }
         }
 
-        private static void ApplyConfiguredAttempts(PlayerStore store)
+        private static void TryMigrateLegacyCounter(PlayerStore store)
         {
-            if (store != null)
+            if (counterMigrationChecked)
             {
-                store.scavengingAttempts = MaxAttempts;
+                return;
+            }
+
+            counterMigrationChecked = true;
+            try
+            {
+                var markerPath = Path.Combine(Environment.CurrentDirectory, "UserData", CounterMigrationMarker);
+                if (File.Exists(markerPath))
+                {
+                    return;
+                }
+
+                var vanillaMaxAttempts = ScavHelper.GetMaxScavAttempts();
+                if (store.scavengingAttempts > vanillaMaxAttempts && ScavengingCounter.IsLegacyInjectedCount(MaxAttempts, store.scavengingAttempts))
+                {
+                    store.scavengingAttempts = 0;
+                    MelonLogger.Warning("ScavengingTweaks migrated the previous invalid scavenging counter to 0.");
+                }
+
+                File.WriteAllText(markerPath, "migrated");
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error("ScavengingTweaks could not migrate the previous scavenging counter.", exception);
             }
         }
 

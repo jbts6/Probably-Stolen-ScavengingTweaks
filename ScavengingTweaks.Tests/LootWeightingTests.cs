@@ -12,6 +12,8 @@ internal static class LootWeightingTests
             EmptyInputReturnsEmpty();
             DoublesTheHighestValueHalf();
             MultiplierBelowOneDoesNotChangeEntries();
+            ConfiguredRemainingAttemptsNeverGoNegative();
+            LegacyInjectedCountIsDetected();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }
@@ -58,6 +60,19 @@ internal static class LootWeightingTests
         var result = LootWeighting.ExpandHighValueEntries(input, values, 0.5);
 
         Ensure(result.SequenceEqual(input), "a multiplier below one must not remove or add entries");
+    }
+
+    private static void ConfiguredRemainingAttemptsNeverGoNegative()
+    {
+        Ensure(ScavengingCounter.GetRemainingAttempts(10, 0) == 10, "a fresh day should expose all configured attempts");
+        Ensure(ScavengingCounter.GetRemainingAttempts(10, 5) == 5, "remaining attempts should use the configured maximum");
+        Ensure(ScavengingCounter.GetRemainingAttempts(10, 15) == 0, "remaining attempts must not become negative");
+    }
+
+    private static void LegacyInjectedCountIsDetected()
+    {
+        Ensure(ScavengingCounter.IsLegacyInjectedCount(10, 10), "the previous patch value should be recognized for migration");
+        Ensure(!ScavengingCounter.IsLegacyInjectedCount(10, 5), "a vanilla-sized used count should not be migrated");
     }
 
     private static void Ensure(bool condition, string message)
