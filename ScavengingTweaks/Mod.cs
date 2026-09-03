@@ -462,7 +462,7 @@ public sealed class Mod : MelonMod
                         diagnosticSampleIndex = index;
                         var itemEntry = itemEntries[index];
                         MelonLogger.Msg(
-                            "ScavengingTweaks weight adjustment probe BEFORE: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                            "ScavengingTweaks weight adjustment probe BEFORE: id={0}, m_Weight={1}, m_BaseProbability={2:F4}, BaseProbability={3:F4}, Probability={4:F4}.",
                             ids[index],
                             itemEntry.m_Weight,
                             itemEntry.m_BaseProbability,
@@ -472,18 +472,20 @@ public sealed class Mod : MelonMod
                     }
                 }
 
-                // 第二步：调整所有权重
+                // 第二步：调整 m_BaseProbability（这才是实际抽样使用的字段）
                 for (var index = 0; index < scaledWeights.Count; index++)
                 {
                     var itemEntry = itemEntries[index];
-                    __state.RestoreActions.Add(new Action<int>(w => itemEntry.m_Weight = w));
-                    __state.OriginalWeights.Add(weights[index]);
+                    __state.RestoreActions.Add(new Action<int>(w => itemEntry.m_BaseProbability = (float)w / 100f));
+                    __state.OriginalWeights.Add((int)(itemEntry.m_BaseProbability * 100f));
                     if (scaledWeights[index] == weights[index])
                     {
                         continue;
                     }
 
-                    itemEntry.m_Weight = scaledWeights[index];
+                    // 按比例缩放 m_BaseProbability
+                    var scaleFactor = (double)scaledWeights[index] / Math.Max(1, weights[index]);
+                    itemEntry.m_BaseProbability = (float)(itemEntry.m_BaseProbability * scaleFactor);
                     __state.AdjustedEntries++;
                 }
 
@@ -492,36 +494,12 @@ public sealed class Mod : MelonMod
                 {
                     var sampleEntry = itemEntries[diagnosticSampleIndex];
                     MelonLogger.Msg(
-                        "ScavengingTweaks weight adjustment probe AFTER set m_Weight: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                        "ScavengingTweaks weight adjustment probe AFTER set m_BaseProbability: id={0}, m_Weight={1}, m_BaseProbability={2:F4}, BaseProbability={3:F4}, Probability={4:F4}.",
                         ids[diagnosticSampleIndex],
                         sampleEntry.m_Weight,
                         sampleEntry.m_BaseProbability,
                         sampleEntry.BaseProbability,
                         sampleEntry.Probability);
-
-                    try
-                    {
-                        var updateMethod = sampleEntry.GetType().GetMethod("RNGNeeds_IProbabilityItem_UpdateProperties", BindingFlags.Public | BindingFlags.Instance);
-                        if (updateMethod != null)
-                        {
-                            updateMethod.Invoke(sampleEntry, null);
-                            MelonLogger.Msg(
-                                "ScavengingTweaks weight adjustment probe AFTER UpdateProperties: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
-                                ids[diagnosticSampleIndex],
-                                sampleEntry.m_Weight,
-                                sampleEntry.m_BaseProbability,
-                                sampleEntry.BaseProbability,
-                                sampleEntry.Probability);
-                        }
-                        else
-                        {
-                            MelonLogger.Warning("ScavengingTweaks could not find UpdateProperties method on ProbabilityItem.");
-                        }
-                    }
-                    catch (Exception updateException)
-                    {
-                        MelonLogger.Warning("ScavengingTweaks could not invoke UpdateProperties: {0}", updateException.Message);
-                    }
                 }
 
                 if (LoggedWeightTables.Add(tableGroupID))
