@@ -8,3 +8,24 @@ UserData/
 MelonLoader/
 GameAssembly.dll
 global-metadata.dat
+
+# Steam runtime and assembled package files
+*.exe
+*.dll
+*.dat
+Probably Stolen_Data/
+Plugins/
+FreeNightServices/
+tools/
+translation/
+Probably-Stolen-ZH-report-*/
+Install.cmd
+Install-Compatible.ps1
+PACKAGE_VERSION.txt
+README_CN.md
+SHA256SUMS.txt
+TRACEABILITY.md
+说明.txt
+
+# Local planning artifacts, not repository documentation
+docs/superpowers/
