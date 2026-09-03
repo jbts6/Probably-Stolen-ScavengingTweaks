@@ -4,17 +4,39 @@
 
 ## 当前状态
 
-本任务暂缓，尚未完成最终修复。当前工作区保留了一版实验性实现，`Mods\ScavengingTweaks.dll` 已由构建更新，但没有经过新版本的游戏内验证，不能把它当作已确认生效的版本。
+已完成诊断日志增强，等待游戏内测试验证。
 
-当前 Git 基线为 `aa70cf4 chore: ignore game runtime files`，以下三个文件有未提交改动：
+- Git 基线：`6ffdc0f docs: add diagnostic testing instructions`
+- 构建状态：✅ 编译通过，✅ 测试通过
+- Mod DLL：`Mods\ScavengingTweaks.dll` 已更新（包含探针日志）
+- 测试指引：见 `TESTING_INSTRUCTIONS.md`
+- 未执行远程 push
 
-- `ScavengingTweaks\Mod.cs`
-- `ScavengingTweaks\LootWeighting.cs`
-- `ScavengingTweaks.Tests\LootWeightingTests.cs`
+## 本次更新内容（2026-09-03）
 
-未执行远程 push。
+### 增强的诊断日志
 
-## 用户现象
+在 `SpawnFromTableGroupPrefix` 中新增探针机制：
+
+1. **采样被调整的物品**：从首个被放大权重的物品中提取诊断样本
+2. **三阶段记录**：
+   - BEFORE：记录调整前的 `m_Weight`、`m_BaseProbability`、`BaseProbability`、`Probability`
+   - AFTER set m_Weight：记录直接修改 `m_Weight` 后的字段状态
+   - AFTER UpdateProperties：尝试反射调用 `RNGNeeds_IProbabilityItem_UpdateProperties()` 并记录结果
+3. **保留物品引用**：改用 `List<ProbabilityItem<string>>` 保存实际对象引用，确保探针和恢复操作访问同一实例
+
+### 核心验证目标
+
+确认以下三种可能性之一：
+- ✅ 修改 `m_Weight` 后 `Probability` 自动更新 → 当前方案有效
+- ⚠️ 需要调用 `UpdateProperties` 才更新 → 需要在每次调整后显式调用
+- ❌ `Probability` 始终不变 → 需要切换到备用方案（调整 `m_BaseProbability` 或结果替换）
+
+### 相关文件
+
+- `ScavengingTweaks\Mod.cs:394-481` - 增强的 SpawnFromTableGroupPrefix
+- `TESTING_INSTRUCTIONS.md` - 用户测试指引和日志解读方法
+
 
 用户把 `HighValueMultiplier` 设为 `10`，拾荒结果仍以垃圾为主；一次 10 次测试中只出现 8 次非空结果。最新相关日志是：
 
