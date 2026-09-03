@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using HarmonyLib;
 using Il2Cpp;
 using MelonLoader;
@@ -14,7 +13,7 @@ public sealed class Mod : MelonMod
 {
     private const string HarmonyId = "ProbablyStolen.ScavengingTweaks";
     private const string CounterMigrationMarker = "ScavengingTweaks.counter-migrated-v2";
-    private static readonly HashSet<int> ExpandedLocationObjects = new();
+    private static readonly HashSet<string> LoggedWeightTables = new(StringComparer.Ordinal);
     private static MelonPreferences_Entry<int> maxAttempts = null!;
     private static MelonPreferences_Entry<float> highValueMultiplier = null!;
     private static MelonPreferences_Entry<string> woundBlockMode = null!;
@@ -24,6 +23,9 @@ public sealed class Mod : MelonMod
     private static bool counterMigrationChecked;
     private static bool inScavengeWindow;
     private static long scavengeWindowTick = long.MinValue;
+    private static long scavengeAttemptSequence;
+    private static long activeScavengeAttempt;
+    private static bool activeAttemptObservedRoll;
     private static bool warnedOutsideWindow;
 
     public override void OnInitializeMelon()
@@ -187,10 +189,16 @@ public sealed class Mod : MelonMod
         Patch(harmony, typeof(ScavHelper), "RollMinorWound", prefix: nameof(Patches.RollMinorWoundPrefix));
         Patch(harmony, typeof(ScavHelper), "RollMajorWound", prefix: nameof(Patches.RollMajorWoundPrefix));
         Patch(harmony, typeof(ScavHelper), "ScavengeDumpingGrounds", prefix: nameof(Patches.ScavengePrefix), postfix: nameof(Patches.ScavengePostfix));
-        Patch(harmony, typeof(ScavHelper), "GetRandomScavengedItem", postfix: nameof(Patches.UpgradeRolledLootPostfix));
+        Patch(harmony, typeof(ScavHelper), "GetRandomScavengedItem", postfix: nameof(Patches.ScavengedItemResultPostfix));
+        Patch(
+            harmony,
+            typeof(ItemSpawner),
+            "SpawnFromTableGroup",
+            prefix: nameof(Patches.SpawnFromTableGroupPrefix),
+            postfix: nameof(Patches.SpawnFromTableGroupPostfix),
+            finalizer: nameof(Patches.SpawnFromTableGroupFinalizer));
         Patch(harmony, typeof(HealthData), "ReceiveMinorWound", prefix: nameof(Patches.BlockMinorWoundPrefix));
         Patch(harmony, typeof(HealthData), "ReceiveMajorWound", prefix: nameof(Patches.BlockMajorWoundPrefix));
-        Patch(harmony, typeof(ExpeditionLocationList), "DumpingGrounds", postfix: nameof(Patches.DumpingGroundsPostfix));
     }
 
     private static void Patch(
@@ -198,7 +206,8 @@ public sealed class Mod : MelonMod
         Type targetType,
         string targetMethodName,
         string? prefix = null,
-        string? postfix = null)
+        string? postfix = null,
+        string? finalizer = null)
     {
         var target = AccessTools.Method(targetType, targetMethodName);
         if (target == null)
@@ -209,7 +218,8 @@ public sealed class Mod : MelonMod
 
         var prefixMethod = prefix == null ? null : new HarmonyMethod(typeof(Patches), prefix);
         var postfixMethod = postfix == null ? null : new HarmonyMethod(typeof(Patches), postfix);
-        harmony.Patch(target, prefixMethod, postfixMethod);
+        var finalizerMethod = finalizer == null ? null : new HarmonyMethod(typeof(Patches), finalizer);
+        harmony.Patch(target, prefixMethod, postfixMethod, finalizer: finalizerMethod);
     }
 
     private static class Patches
@@ -301,13 +311,32 @@ public sealed class Mod : MelonMod
 
         public static void ScavengePrefix()
         {
+            activeScavengeAttempt = ++scavengeAttemptSequence;
+            activeAttemptObservedRoll = false;
             inScavengeWindow = true;
             scavengeWindowTick = Environment.TickCount64;
+            MelonLogger.Msg(
+                "ScavengingTweaks scavenge attempt start: sequence={0}.",
+                activeScavengeAttempt);
         }
 
         public static void ScavengePostfix()
         {
+            if (activeScavengeAttempt != 0 && !activeAttemptObservedRoll)
+            {
+                MelonLogger.Msg(
+                    "ScavengingTweaks scavenge attempt end: sequence={0}, no random loot result (empty attempt).",
+                    activeScavengeAttempt);
+            }
+            else if (activeScavengeAttempt != 0)
+            {
+                MelonLogger.Msg(
+                    "ScavengingTweaks scavenge attempt end: sequence={0}, random loot result observed.",
+                    activeScavengeAttempt);
+            }
+
             inScavengeWindow = false;
+            activeScavengeAttempt = 0;
         }
 
         // If the original throws, the postfix never runs; the tick guard makes
@@ -342,153 +371,198 @@ public sealed class Mod : MelonMod
             return false;
         }
 
-        public static void DumpingGroundsPostfix(ref ExpeditionLocation __result)
+        public sealed class TableWeightState
         {
+            public readonly List<Action<int>> RestoreActions = new();
+            public readonly List<int> OriginalWeights = new();
+            public int AdjustedEntries;
+            public bool Restored;
+        }
+
+        public static void ScavengedItemResultPostfix(Il2CppSystem.Collections.Generic.List<GameItem> __result)
+        {
+            if (!ScavengeWindowOpen)
+            {
+                return;
+            }
+
+            var count = __result?.Count ?? 0;
+            activeAttemptObservedRoll = count > 0;
+            MelonLogger.Msg("ScavengingTweaks scavenge result: drops={0}.", count);
+        }
+
+        public static void SpawnFromTableGroupPrefix(string tableGroupID, ref TableWeightState __state)
+        {
+            __state = new TableWeightState();
+            if (!ScavengeWindowOpen || HighValueMultiplier <= 1.0 || string.IsNullOrWhiteSpace(tableGroupID))
+            {
+                return;
+            }
+
             try
             {
-                // During EmporiumEntry the game reads DumpingGrounds to restore
-                // dump state before the item directory and PlayerStore exist;
-                // touching them here re-enters the init sequence and hangs the load.
-                if (PlayerStore.instance == null)
+                var tableGroups = TableGroupMaster.tableGroups;
+                if (tableGroups == null || !tableGroups.TryGetValue(tableGroupID, out var tableGroup) || tableGroup == null)
                 {
                     return;
                 }
 
-                if (__result == null)
+                var tableEntries = tableGroup.tableGroup?.ProbabilityItems;
+                if (tableEntries == null || tableEntries.Count == 0)
                 {
                     return;
                 }
 
-                var objectId = RuntimeHelpers.GetHashCode(__result);
-                if (!ExpandedLocationObjects.Add(objectId))
-                {
-                    return;
-                }
-
-                var loot = __result.possibleLoot;
-                if (loot == null || loot.Count == 0)
-                {
-                    return;
-                }
-
-                var ids = new List<string>(loot.Count);
+                var ids = new List<string>();
+                var weights = new List<int>();
                 var values = new Dictionary<string, long>(StringComparer.Ordinal);
-                for (var index = 0; index < loot.Count; index++)
+                var itemEntries = new List<Il2CppRNGNeeds.ProbabilityItem<string>>();
+                for (var tableIndex = 0; tableIndex < tableEntries.Count; tableIndex++)
                 {
-                    var id = loot[index];
-                    ids.Add(id);
-                    if (id != null && !values.ContainsKey(id) && TryGetBaseValue(id, out var value))
-                    {
-                        values[id] = value;
-                    }
-                }
-
-                var expanded = LootWeighting.ExpandHighValueEntries(ids, values, HighValueMultiplier);
-                UpdateBestLoot(values);
-
-                // Diagnostic: expose the real base values so weighting issues are visible.
-                var tableSummary = new System.Text.StringBuilder();
-                foreach (var pair in values)
-                {
-                    if (tableSummary.Length > 0)
-                    {
-                        tableSummary.Append(", ");
-                    }
-                    tableSummary.Append(pair.Key).Append('=').Append(pair.Value);
-                }
-                MelonLogger.Msg(
-                    "ScavengingTweaks dump table: [{0}] -> {1} entries.",
-                    tableSummary.ToString(),
-                    expanded.Count);
-
-                if (expanded.Count <= ids.Count)
-                {
-                    return;
-                }
-
-                loot.Clear();
-                foreach (var id in expanded)
-                {
-                    loot.Add(id);
-                }
-            }
-            catch (Exception exception)
-            {
-                MelonLogger.Error("ScavengingTweaks failed to adjust dump loot; original table is preserved.", exception);
-            }
-        }
-
-        private static string bestLootId;
-        private static long bestLootValue;
-
-        private static void UpdateBestLoot(Dictionary<string, long> values)
-        {
-            foreach (var pair in values)
-            {
-                if (bestLootId == null || pair.Value > bestLootValue)
-                {
-                    bestLootId = pair.Key;
-                    bestLootValue = pair.Value;
-                }
-            }
-        }
-
-        // The dump roll does not sample possibleLoot uniformly, so duplicating
-        // table entries cannot shift the outcome. Reshape the rolled result
-        // directly: low-value drops become the table's best item with
-        // probability (multiplier-1)/multiplier.
-        public static void UpgradeRolledLootPostfix(Il2CppSystem.Collections.Generic.List<GameItem> __result)
-        {
-            try
-            {
-                if (__result == null || __result.Count == 0 || bestLootId == null || HighValueMultiplier <= 1.0)
-                {
-                    return;
-                }
-
-                var upgradeChance = (HighValueMultiplier - 1.0) / HighValueMultiplier;
-                var upgraded = 0;
-                for (var index = 0; index < __result.Count; index++)
-                {
-                    var item = __result[index];
-                    if (item == null)
+                    var tableEntry = tableEntries[tableIndex];
+                    var lootTable = tableEntry?.Value;
+                    var items = lootTable?.table?.ProbabilityItems;
+                    if (items == null)
                     {
                         continue;
                     }
 
-                    long value;
+                    for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+                    {
+                        var itemEntry = items[itemIndex];
+                        if (itemEntry == null)
+                        {
+                            continue;
+                        }
+
+                        var itemId = itemEntry.Value;
+                        ids.Add(itemId ?? string.Empty);
+                        weights.Add(itemEntry.m_Weight);
+                        itemEntries.Add(itemEntry);
+                        if (itemId != null && !values.ContainsKey(itemId) && TryGetBaseValue(itemId, out var value))
+                        {
+                            values[itemId] = value;
+                        }
+                    }
+                }
+
+                if (ids.Count == 0)
+                {
+                    return;
+                }
+
+                var scaledWeights = LootWeighting.ScaleHighValueWeights(ids, weights, values, HighValueMultiplier);
+                var diagnosticSampleIndex = -1;
+                for (var index = 0; index < scaledWeights.Count; index++)
+                {
+                    var itemEntry = itemEntries[index];
+                    __state.RestoreActions.Add(new Action<int>(w => itemEntry.m_Weight = w));
+                    __state.OriginalWeights.Add(weights[index]);
+                    if (scaledWeights[index] == weights[index])
+                    {
+                        continue;
+                    }
+
+                    if (diagnosticSampleIndex < 0 && !string.IsNullOrWhiteSpace(ids[index]))
+                    {
+                        diagnosticSampleIndex = index;
+                        MelonLogger.Msg(
+                            "ScavengingTweaks weight adjustment probe BEFORE: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                            ids[index],
+                            itemEntry.m_Weight,
+                            itemEntry.m_BaseProbability,
+                            itemEntry.BaseProbability,
+                            itemEntry.Probability);
+                    }
+
+                    itemEntry.m_Weight = scaledWeights[index];
+                    __state.AdjustedEntries++;
+                }
+
+                if (diagnosticSampleIndex >= 0)
+                {
+                    var sampleEntry = itemEntries[diagnosticSampleIndex];
+                    MelonLogger.Msg(
+                        "ScavengingTweaks weight adjustment probe AFTER set m_Weight: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                        ids[diagnosticSampleIndex],
+                        sampleEntry.m_Weight,
+                        sampleEntry.m_BaseProbability,
+                        sampleEntry.BaseProbability,
+                        sampleEntry.Probability);
+
                     try
                     {
-                        value = item.GetBaseValue();
+                        var updateMethod = sampleEntry.GetType().GetMethod("RNGNeeds_IProbabilityItem_UpdateProperties", BindingFlags.Public | BindingFlags.Instance);
+                        if (updateMethod != null)
+                        {
+                            updateMethod.Invoke(sampleEntry, null);
+                            MelonLogger.Msg(
+                                "ScavengingTweaks weight adjustment probe AFTER UpdateProperties: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                                ids[diagnosticSampleIndex],
+                                sampleEntry.m_Weight,
+                                sampleEntry.m_BaseProbability,
+                                sampleEntry.BaseProbability,
+                                sampleEntry.Probability);
+                        }
+                        else
+                        {
+                            MelonLogger.Warning("ScavengingTweaks could not find UpdateProperties method on ProbabilityItem.");
+                        }
                     }
-                    catch
+                    catch (Exception updateException)
                     {
-                        continue;
+                        MelonLogger.Warning("ScavengingTweaks could not invoke UpdateProperties: {0}", updateException.Message);
                     }
-
-                    if (value >= bestLootValue || Random.Shared.NextDouble() >= upgradeChance)
-                    {
-                        continue;
-                    }
-
-                    var replacement = DirectoryMaster.Item(bestLootId, false);
-                    if (replacement == null)
-                    {
-                        continue;
-                    }
-
-                    __result[index] = replacement;
-                    upgraded++;
                 }
 
-                if (upgraded > 0)
+                if (LoggedWeightTables.Add(tableGroupID))
                 {
-                    MelonLogger.Msg("ScavengingTweaks upgraded {0}/{1} scavenged drops to {2}.", upgraded, __result.Count, bestLootId);
+                    MelonLogger.Msg(
+                        "ScavengingTweaks applied dump weights: group={0}, tables={1}, itemEntries={2}, valuedEntries={3}, adjustedEntries={4}, multiplier={5:0.##}x.",
+                        tableGroupID,
+                        tableEntries.Count,
+                        ids.Count,
+                        values.Count,
+                        __state.AdjustedEntries,
+                        HighValueMultiplier);
                 }
             }
             catch (Exception exception)
             {
-                MelonLogger.Error("ScavengingTweaks failed to upgrade scavenged loot.", exception);
+                MelonLogger.Error("ScavengingTweaks could not adjust the dump table weights; original weights are preserved.", exception);
+            }
+        }
+
+        public static void SpawnFromTableGroupPostfix(TableWeightState __state)
+        {
+            RestoreTableWeights(__state);
+        }
+
+        public static Exception? SpawnFromTableGroupFinalizer(Exception? __exception, TableWeightState __state)
+        {
+            RestoreTableWeights(__state);
+            return __exception;
+        }
+
+        private static void RestoreTableWeights(TableWeightState state)
+        {
+            if (state == null || state.Restored)
+            {
+                return;
+            }
+
+            state.Restored = true;
+            var count = Math.Min(state.RestoreActions.Count, state.OriginalWeights.Count);
+            for (var index = 0; index < count; index++)
+            {
+                try
+                {
+                    state.RestoreActions[index](state.OriginalWeights[index]);
+                }
+                catch (Exception exception)
+                {
+                    MelonLogger.Warning("ScavengingTweaks could not restore a dump table weight: {0}", exception.Message);
+                }
             }
         }
 
@@ -534,8 +608,20 @@ public sealed class Mod : MelonMod
                     return false;
                 }
 
-                value = item.GetBaseValue();
-                return true;
+                var baseValue = item.GetBaseValue();
+                var complexValue = item.GetComplexeItemValue();
+                var unitBaseValue = item.unitBaseValue;
+                var unitValue = item.unitValue;
+                var lateUnitValue = item.lateUnitValue;
+                var backupUnitValue = item.backupUnitValue;
+                value = LootWeighting.GetEffectiveValue(
+                    baseValue,
+                    complexValue,
+                    unitBaseValue,
+                    unitValue,
+                    lateUnitValue,
+                    backupUnitValue);
+                return value > 0L;
             }
             catch (Exception exception)
             {
@@ -544,5 +630,6 @@ public sealed class Mod : MelonMod
                 return false;
             }
         }
+
     }
 }

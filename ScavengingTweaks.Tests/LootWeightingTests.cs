@@ -11,6 +11,10 @@ internal static class LootWeightingTests
         {
             EmptyInputReturnsEmpty();
             DoublesTheHighestValueHalf();
+            ScalesHighestValueHalfWhilePreservingWeights();
+            WeightScalingClampsOverflow();
+            UpgradeChanceMatchesConfiguredMultiplier();
+            EffectiveValueUsesAvailableGameValues();
             MultiplierBelowOneDoesNotChangeEntries();
             ConfiguredRemainingAttemptsNeverGoNegative();
             LegacyInjectedCountIsDetected();
@@ -60,6 +64,48 @@ internal static class LootWeightingTests
         var result = LootWeighting.ExpandHighValueEntries(input, values, 0.5);
 
         Ensure(result.SequenceEqual(input), "a multiplier below one must not remove or add entries");
+    }
+
+    private static void UpgradeChanceMatchesConfiguredMultiplier()
+    {
+        Ensure(LootWeighting.GetUpgradeChance(1.0) == 0.0, "a 1x multiplier should never upgrade a drop");
+        Ensure(Math.Abs(LootWeighting.GetUpgradeChance(2.0) - 0.5) < 0.000001, "a 2x multiplier should upgrade half of low-value drops");
+        Ensure(Math.Abs(LootWeighting.GetUpgradeChance(10.0) - 0.9) < 0.000001, "a 10x multiplier should upgrade 90 percent of low-value drops");
+        Ensure(LootWeighting.GetUpgradeChance(double.PositiveInfinity) == 1.0, "an infinite multiplier should always upgrade a low-value drop");
+    }
+
+    private static void ScalesHighestValueHalfWhilePreservingWeights()
+    {
+        var ids = new[] { "low", "mid", "high" };
+        var weights = new[] { 2, 3, 5 };
+        var values = new Dictionary<string, long>
+        {
+            ["low"] = 5,
+            ["mid"] = 50,
+            ["high"] = 100
+        };
+
+        var result = LootWeighting.ScaleHighValueWeights(ids, weights, values, 2.0);
+
+        Ensure(result.SequenceEqual(new[] { 2, 6, 10 }), "a 2x multiplier should scale only the highest-value half");
+    }
+
+    private static void WeightScalingClampsOverflow()
+    {
+        var ids = new[] { "high" };
+        var weights = new[] { int.MaxValue };
+        var values = new Dictionary<string, long> { ["high"] = 100 };
+
+        var result = LootWeighting.ScaleHighValueWeights(ids, weights, values, 10.0);
+
+        Ensure(result[0] == int.MaxValue, "scaled weights must clamp instead of overflowing");
+    }
+
+    private static void EffectiveValueUsesAvailableGameValues()
+    {
+        Ensure(LootWeighting.GetEffectiveValue(0, 0, 120, 90, 0, 0) == 120, "the first nonzero game value source should not hide a higher fallback value");
+        Ensure(LootWeighting.GetEffectiveValue(0, 240, 120, 90, 80, 70) == 240, "the effective value should use the largest available game value");
+        Ensure(LootWeighting.GetEffectiveValue(0, 0, 0, 0, 0, 0) == 0, "missing game values should remain zero");
     }
 
     private static void ConfiguredRemainingAttemptsNeverGoNegative()
