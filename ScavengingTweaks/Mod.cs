@@ -452,7 +452,27 @@ public sealed class Mod : MelonMod
                 }
 
                 var scaledWeights = LootWeighting.ScaleHighValueWeights(ids, weights, values, HighValueMultiplier);
+
+                // 第一步：选择探针样本并记录 BEFORE 状态
                 var diagnosticSampleIndex = -1;
+                for (var index = 0; index < scaledWeights.Count; index++)
+                {
+                    if (scaledWeights[index] != weights[index] && !string.IsNullOrWhiteSpace(ids[index]))
+                    {
+                        diagnosticSampleIndex = index;
+                        var itemEntry = itemEntries[index];
+                        MelonLogger.Msg(
+                            "ScavengingTweaks weight adjustment probe BEFORE: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
+                            ids[index],
+                            itemEntry.m_Weight,
+                            itemEntry.m_BaseProbability,
+                            itemEntry.BaseProbability,
+                            itemEntry.Probability);
+                        break;
+                    }
+                }
+
+                // 第二步：调整所有权重
                 for (var index = 0; index < scaledWeights.Count; index++)
                 {
                     var itemEntry = itemEntries[index];
@@ -463,22 +483,11 @@ public sealed class Mod : MelonMod
                         continue;
                     }
 
-                    if (diagnosticSampleIndex < 0 && !string.IsNullOrWhiteSpace(ids[index]))
-                    {
-                        diagnosticSampleIndex = index;
-                        MelonLogger.Msg(
-                            "ScavengingTweaks weight adjustment probe BEFORE: id={0}, m_Weight={1}, m_BaseProbability={2}, BaseProbability={3}, Probability={4}.",
-                            ids[index],
-                            itemEntry.m_Weight,
-                            itemEntry.m_BaseProbability,
-                            itemEntry.BaseProbability,
-                            itemEntry.Probability);
-                    }
-
                     itemEntry.m_Weight = scaledWeights[index];
                     __state.AdjustedEntries++;
                 }
 
+                // 第三步：记录探针样本的 AFTER 状态
                 if (diagnosticSampleIndex >= 0)
                 {
                     var sampleEntry = itemEntries[diagnosticSampleIndex];
