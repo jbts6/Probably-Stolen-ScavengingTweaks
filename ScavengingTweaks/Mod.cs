@@ -26,6 +26,7 @@ public sealed class Mod : MelonMod
     private static long scavengeAttemptSequence;
     private static long activeScavengeAttempt;
     private static bool activeAttemptObservedRoll;
+    private static bool blockedWoundDuringAttempt;
     private static bool warnedOutsideWindow;
 
     public override void OnInitializeMelon()
@@ -313,6 +314,7 @@ public sealed class Mod : MelonMod
         {
             activeScavengeAttempt = ++scavengeAttemptSequence;
             activeAttemptObservedRoll = false;
+            blockedWoundDuringAttempt = false;
             inScavengeWindow = true;
             scavengeWindowTick = Environment.TickCount64;
             MelonLogger.Msg(
@@ -322,6 +324,11 @@ public sealed class Mod : MelonMod
 
         public static void ScavengePostfix()
         {
+            if (activeScavengeAttempt != 0 && blockedWoundDuringAttempt && !activeAttemptObservedRoll)
+            {
+                ResolveBlockedWoundAttempt();
+            }
+
             if (activeScavengeAttempt != 0 && !activeAttemptObservedRoll)
             {
                 MelonLogger.Msg(
@@ -337,6 +344,7 @@ public sealed class Mod : MelonMod
 
             inScavengeWindow = false;
             activeScavengeAttempt = 0;
+            blockedWoundDuringAttempt = false;
         }
 
         // If the original throws, the postfix never runs; the tick guard makes
@@ -367,8 +375,48 @@ public sealed class Mod : MelonMod
                 return true;
             }
 
+            blockedWoundDuringAttempt = true;
             MelonLogger.Msg("ScavengingTweaks blocked a {0} wound (window={1}).", kind, ScavengeWindowOpen);
             return false;
+        }
+
+        private static void ResolveBlockedWoundAttempt()
+        {
+            try
+            {
+                var drops = ScavHelper.GetRandomScavengedItem();
+                var count = drops?.Count ?? 0;
+                if (count == 0)
+                {
+                    MelonLogger.Msg(
+                        "ScavengingTweaks wound fallback produced no random loot (sequence={0}).",
+                        activeScavengeAttempt);
+                    return;
+                }
+
+                var store = PlayerStore.instance;
+                var inventory = store?.gridInv;
+                if (inventory == null)
+                {
+                    MelonLogger.Warning(
+                        "ScavengingTweaks wound fallback generated {0} item(s), but the main inventory was unavailable (sequence={1}).",
+                        count,
+                        activeScavengeAttempt);
+                    return;
+                }
+
+                inventory.UncheckedAcceptAll(drops);
+                MelonLogger.Msg(
+                    "ScavengingTweaks wound fallback delivered {0} random item(s) to the main inventory (sequence={1}).",
+                    count,
+                    activeScavengeAttempt);
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error(
+                    "ScavengingTweaks wound fallback failed for sequence=" + activeScavengeAttempt,
+                    exception);
+            }
         }
 
         public sealed class TableWeightState
