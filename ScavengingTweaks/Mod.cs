@@ -499,6 +499,37 @@ public sealed class Mod : MelonMod
                     return;
                 }
 
+                // 诊断：显示价值排序前后各5个物品
+                if (LoggedWeightTables.Count == 0)
+                {
+                    var sortedByValue = new List<(string id, long value)>();
+                    var uniqueIds = new HashSet<string>(StringComparer.Ordinal);
+                    for (var i = 0; i < ids.Count; i++)
+                    {
+                        var id = ids[i];
+                        if (!string.IsNullOrWhiteSpace(id) && uniqueIds.Add(id) && values.ContainsKey(id))
+                        {
+                            sortedByValue.Add((id, values[id]));
+                        }
+                    }
+                    sortedByValue.Sort((a, b) => b.value.CompareTo(a.value));
+
+                    MelonLogger.Msg("ScavengingTweaks value diagnostic - TOP 5 highest-value items:");
+                    for (var i = 0; i < Math.Min(5, sortedByValue.Count); i++)
+                    {
+                        MelonLogger.Msg("  #{0}: {1} = {2}", i + 1, sortedByValue[i].id, sortedByValue[i].value);
+                    }
+
+                    if (sortedByValue.Count > 5)
+                    {
+                        MelonLogger.Msg("ScavengingTweaks value diagnostic - BOTTOM 5 lowest-value items:");
+                        for (var i = Math.Max(0, sortedByValue.Count - 5); i < sortedByValue.Count; i++)
+                        {
+                            MelonLogger.Msg("  #{0}: {1} = {2}", sortedByValue.Count - i, sortedByValue[i].id, sortedByValue[i].value);
+                        }
+                    }
+                }
+
                 var scaledWeights = LootWeighting.ScaleHighValueWeights(ids, weights, values, HighValueMultiplier);
 
                 // 第一步：选择探针样本并记录 BEFORE 状态

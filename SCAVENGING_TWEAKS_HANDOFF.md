@@ -2,15 +2,33 @@
 
 更新时间：2026-09-03
 
-## 当前状态
+## 当前状态：发现价值判断错误
 
-已完成诊断日志增强，等待游戏内测试验证。
+**关键问题**：权重调整机制工作正常（`m_BaseProbability` 从 0.03 放大到 3.0，100倍），但**被放大的物品是垃圾**。
 
-- Git 基线：`6ffdc0f docs: add diagnostic testing instructions`
+- Git 基线：`6ffdc0f` + 本地未提交修改
 - 构建状态：✅ 编译通过，✅ 测试通过
-- Mod DLL：`Mods\ScavengingTweaks.dll` 已更新（包含探针日志）
+- Mod DLL：`Mods\ScavengingTweaks.dll` 已更新（新增价值诊断日志）
 - 测试指引：见 `TESTING_INSTRUCTIONS.md`
-- 未执行远程 push
+
+### 本次诊断结果（15:18 日志分析）
+
+✅ **权重调整机制正常工作**：
+- `m_BaseProbability` 调整生效：0.0300 → 3.0000（100倍）
+- `Probability` 字段同步更新
+- 52个物品中有23个被调整（44.2%，接近预期的50%）
+
+❌ **价值判断逻辑错误**：
+- 被放大的样本物品：`system_module_ruined`（损坏的系统模块）
+- 这是典型的垃圾物品，却被算法判定为"高价值"
+- **根本原因**：`TryGetBaseValue` 读取的价值字段可能不正确
+
+### 本次修改（未提交）
+
+在 `SpawnFromTableGroupPrefix` 中新增价值诊断日志：
+- 首次调用时显示TOP 5最高价值物品和BOTTOM 5最低价值物品
+- 每个物品显示：排名、物品ID、数值价值
+- 用于验证价值读取逻辑是否正确
 
 ## 本次更新内容（2026-09-03）
 
@@ -32,10 +50,42 @@
 - ⚠️ 需要调用 `UpdateProperties` 才更新 → 需要在每次调整后显式调用
 - ❌ `Probability` 始终不变 → 需要切换到备用方案（调整 `m_BaseProbability` 或结果替换）
 
-### 相关文件
+### 下一步行动
 
-- `ScavengingTweaks\Mod.cs:394-481` - 增强的 SpawnFromTableGroupPrefix
-- `TESTING_INSTRUCTIONS.md` - 用户测试指引和日志解读方法
+**立即验证**：用户在游戏内按F8拾荒一次，查看日志中的价值诊断输出，确认：
+1. TOP 5最高价值物品是什么（应该是电子零件、稀有材料等）
+2. BOTTOM 5最低价值物品是什么（应该是垃圾）
+3. `system_module_ruined` 在排序中的实际位置
+
+**可能的修复方向**：
+
+如果价值诊断显示排序错误：
+- **方案A**：修正 `TryGetBaseValue` 的价值读取逻辑，使用正确的字段
+- **方案B**：添加物品ID黑名单，手动排除已知的垃圾物品
+- **方案C**：改用游戏内的品质等级（Quality）而非价格来判断
+
+如果价值诊断显示排序正确但 `system_module_ruined` 仍被选中：
+- 检查 `FindHighestValueHalf` 的排序逻辑
+- 可能是同价值物品的tie-breaking规则有问题
+
+### 测试方法
+
+1. 启动游戏并加载存档
+2. 按F7跳到晚上（开启拾荒）
+3. 按F8执行一次拾荒
+4. 退出游戏
+5. 检查最新日志中的 `ScavengingTweaks value diagnostic` 部分
+
+预期日志格式：
+```
+ScavengingTweaks value diagnostic - TOP 5 highest-value items:
+  #1: item_id = value
+  #2: item_id = value
+  ...
+ScavengingTweaks value diagnostic - BOTTOM 5 lowest-value items:
+  ...
+```
+
 
 
 用户把 `HighValueMultiplier` 设为 `10`，拾荒结果仍以垃圾为主；一次 10 次测试中只出现 8 次非空结果。最新相关日志是：
