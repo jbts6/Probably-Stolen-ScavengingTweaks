@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using HarmonyLib;
 using Il2Cpp;
 using MelonLoader;
+using UnityEngine;
 
 namespace ScavengingTweaks;
 
@@ -16,7 +17,14 @@ public sealed class Mod : MelonMod
     private static readonly HashSet<int> ExpandedLocationObjects = new();
     private static MelonPreferences_Entry<int> maxAttempts = null!;
     private static MelonPreferences_Entry<float> highValueMultiplier = null!;
+    private static MelonPreferences_Entry<string> woundBlockMode = null!;
+    private static MelonPreferences_Entry<bool> testHotkeysEnabled = null!;
+    private static MelonPreferences_Entry<string> endOfDayHotkey = null!;
+    private static MelonPreferences_Entry<string> directScavengeHotkey = null!;
     private static bool counterMigrationChecked;
+    private static bool inScavengeWindow;
+    private static long scavengeWindowTick = long.MinValue;
+    private static bool warnedOutsideWindow;
 
     public override void OnInitializeMelon()
     {
@@ -37,13 +45,137 @@ public sealed class Mod : MelonMod
             false,
             false,
             null);
+        woundBlockMode = category.CreateEntry<string>(
+            "WoundBlockMode",
+            "ScavengingOnly",
+            "Wound blocking mode",
+            "ScavengingOnly: wounds are blocked during the scavenging resolution. Always: all wounds are blocked (including combat).",
+            false,
+            false,
+            null);
+        testHotkeysEnabled = category.CreateEntry<bool>(
+            "TestHotkeys",
+            true,
+            "Enable test hotkeys",
+            "F7: close the store shutter to skip straight to the evening phase. F8: resolve one scavenging attempt immediately.",
+            false,
+            false,
+            null);
+        endOfDayHotkey = category.CreateEntry<string>(
+            "EndOfDayHotkey",
+            "F7",
+            "Skip-to-evening hotkey",
+            "Closes the store shutter exactly like the player confirming the dialog.",
+            false,
+            false,
+            null);
+        directScavengeHotkey = category.CreateEntry<string>(
+            "DirectScavengeHotkey",
+            "F8",
+            "Direct scavenge hotkey",
+            "Resolves one scavenging attempt immediately without opening the dump UI.",
+            false,
+            false,
+            null);
 
         InstallPatches();
-        MelonLogger.Msg("ScavengingTweaks loaded: attempts={0}, high-value multiplier={1:0.##}x", MaxAttempts, HighValueMultiplier);
+        MelonLogger.Msg("ScavengingTweaks loaded: attempts={0}, high-value multiplier={1:0.##}x, wound mode={2}", MaxAttempts, HighValueMultiplier, woundBlockMode.Value);
+        if (testHotkeysEnabled.Value)
+        {
+            MelonLogger.Msg("ScavengingTweaks test hotkeys armed: {0}=skip to evening, {1}=direct scavenge.", endOfDayHotkey.Value, directScavengeHotkey.Value);
+        }
+    }
+
+    private static bool loggedUpdateAlive;
+
+    public override void OnUpdate()
+    {
+        if (!testHotkeysEnabled.Value)
+        {
+            return;
+        }
+
+        if (!loggedUpdateAlive)
+        {
+            loggedUpdateAlive = true;
+            MelonLogger.Msg("ScavengingTweaks test hotkeys are being polled.");
+        }
+
+        try
+        {
+            if (TryGetHotkey(endOfDayHotkey, out var endOfDayKey) && Input.GetKeyDown(endOfDayKey))
+            {
+                SkipToEndOfDayPhase();
+            }
+
+            if (TryGetHotkey(directScavengeHotkey, out var scavengeKey) && Input.GetKeyDown(scavengeKey))
+            {
+                RunDirectScavenge();
+            }
+        }
+        catch (Exception exception)
+        {
+            MelonLogger.Error("ScavengingTweaks hotkey handling failed.", exception);
+        }
+    }
+
+    private static bool TryGetHotkey(MelonPreferences_Entry<string> entry, out KeyCode key)
+    {
+        key = default;
+        return Enum.TryParse(entry.Value, ignoreCase: true, out key);
+    }
+
+    // F9: replicate the player confirming the shutter dialog, which is the
+    // vanilla trigger that ends the selling phase and unlocks afterhours.
+    private static void SkipToEndOfDayPhase()
+    {
+        var store = PlayerStore.instance;
+        if (store == null)
+        {
+            MelonLogger.Msg("ScavengingTweaks hotkey: no store loaded yet (still in the main menu?).");
+            return;
+        }
+
+        var shutter = StoreShutterButton.Instance;
+        if (shutter == null)
+        {
+            MelonLogger.Warning("ScavengingTweaks hotkey: StoreShutterButton not found in this scene.");
+            return;
+        }
+
+        if (shutter.isClosed)
+        {
+            MelonLogger.Msg("ScavengingTweaks hotkey: shutter is already closed; the evening phase should be active.");
+            return;
+        }
+
+        shutter.EndAndClose();
+        MelonLogger.Msg("ScavengingTweaks hotkey: shutter closed, skipping to the evening phase.");
+    }
+
+    // F10: resolve one scavenging attempt without navigating to the dump UI.
+    private static void RunDirectScavenge()
+    {
+        var store = PlayerStore.instance;
+        if (store == null)
+        {
+            MelonLogger.Msg("ScavengingTweaks hotkey: no store loaded yet (still in the main menu?).");
+            return;
+        }
+
+        if (!ScavHelper.CanScavenge())
+        {
+            MelonLogger.Msg("ScavengingTweaks hotkey: scavenging is not available right now (attempts left={0}).", store.scavengingAttempts);
+            return;
+        }
+
+        ScavHelper.ScavengeDumpingGrounds();
+        MelonLogger.Msg("ScavengingTweaks hotkey: resolved one direct scavenging attempt.");
     }
 
     private static int MaxAttempts => Math.Max(1, maxAttempts.Value);
     private static double HighValueMultiplier => Math.Max(1.0, highValueMultiplier.Value);
+    private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void InstallPatches()
     {
@@ -52,8 +184,12 @@ public sealed class Mod : MelonMod
         Patch(harmony, typeof(ScavHelper), "CanScavenge", prefix: nameof(Patches.CanScavengePrefix), postfix: nameof(Patches.CanScavengePostfix));
         Patch(harmony, typeof(ScavHelper), "GetMinorWoundChance", postfix: nameof(Patches.ZeroChancePostfix));
         Patch(harmony, typeof(ScavHelper), "GetMajorWoundChance", postfix: nameof(Patches.ZeroChancePostfix));
-        Patch(harmony, typeof(ScavHelper), "RollMinorWound", prefix: nameof(Patches.NeverWoundPrefix));
-        Patch(harmony, typeof(ScavHelper), "RollMajorWound", prefix: nameof(Patches.NeverWoundPrefix));
+        Patch(harmony, typeof(ScavHelper), "RollMinorWound", prefix: nameof(Patches.RollMinorWoundPrefix));
+        Patch(harmony, typeof(ScavHelper), "RollMajorWound", prefix: nameof(Patches.RollMajorWoundPrefix));
+        Patch(harmony, typeof(ScavHelper), "ScavengeDumpingGrounds", prefix: nameof(Patches.ScavengePrefix), postfix: nameof(Patches.ScavengePostfix));
+        Patch(harmony, typeof(ScavHelper), "GetRandomScavengedItem", postfix: nameof(Patches.UpgradeRolledLootPostfix));
+        Patch(harmony, typeof(HealthData), "ReceiveMinorWound", prefix: nameof(Patches.BlockMinorWoundPrefix));
+        Patch(harmony, typeof(HealthData), "ReceiveMajorWound", prefix: nameof(Patches.BlockMajorWoundPrefix));
         Patch(harmony, typeof(ExpeditionLocationList), "DumpingGrounds", postfix: nameof(Patches.DumpingGroundsPostfix));
     }
 
@@ -151,9 +287,58 @@ public sealed class Mod : MelonMod
             __result = 0.0f;
         }
 
-        public static bool NeverWoundPrefix(ref bool __result)
+        public static bool RollMinorWoundPrefix()
         {
-            __result = false;
+            MelonLogger.Msg("ScavengingTweaks suppressed a minor wound roll.");
+            return false;
+        }
+
+        public static bool RollMajorWoundPrefix()
+        {
+            MelonLogger.Msg("ScavengingTweaks suppressed a major wound roll.");
+            return false;
+        }
+
+        public static void ScavengePrefix()
+        {
+            inScavengeWindow = true;
+            scavengeWindowTick = Environment.TickCount64;
+        }
+
+        public static void ScavengePostfix()
+        {
+            inScavengeWindow = false;
+        }
+
+        // If the original throws, the postfix never runs; the tick guard makes
+        // the stale window expire on its own instead of blocking wounds forever.
+        private static bool ScavengeWindowOpen => inScavengeWindow && Environment.TickCount64 - scavengeWindowTick < 10_000;
+
+        public static bool BlockMinorWoundPrefix()
+        {
+            return BlockWoundPrefix("minor");
+        }
+
+        public static bool BlockMajorWoundPrefix()
+        {
+            return BlockWoundPrefix("major");
+        }
+
+        private static bool BlockWoundPrefix(string kind)
+        {
+            if (!ScavengeWindowOpen && !BlockAllWounds)
+            {
+                if (!warnedOutsideWindow)
+                {
+                    warnedOutsideWindow = true;
+                    MelonLogger.Warning(
+                        "ScavengingTweaks saw a {0} wound outside the scavenging window; it was not blocked. Set WoundBlockMode=Always to block every wound.",
+                        kind);
+                }
+                return true;
+            }
+
+            MelonLogger.Msg("ScavengingTweaks blocked a {0} wound (window={1}).", kind, ScavengeWindowOpen);
             return false;
         }
 
@@ -161,6 +346,14 @@ public sealed class Mod : MelonMod
         {
             try
             {
+                // During EmporiumEntry the game reads DumpingGrounds to restore
+                // dump state before the item directory and PlayerStore exist;
+                // touching them here re-enters the init sequence and hangs the load.
+                if (PlayerStore.instance == null)
+                {
+                    return;
+                }
+
                 if (__result == null)
                 {
                     return;
@@ -191,6 +384,23 @@ public sealed class Mod : MelonMod
                 }
 
                 var expanded = LootWeighting.ExpandHighValueEntries(ids, values, HighValueMultiplier);
+                UpdateBestLoot(values);
+
+                // Diagnostic: expose the real base values so weighting issues are visible.
+                var tableSummary = new System.Text.StringBuilder();
+                foreach (var pair in values)
+                {
+                    if (tableSummary.Length > 0)
+                    {
+                        tableSummary.Append(", ");
+                    }
+                    tableSummary.Append(pair.Key).Append('=').Append(pair.Value);
+                }
+                MelonLogger.Msg(
+                    "ScavengingTweaks dump table: [{0}] -> {1} entries.",
+                    tableSummary.ToString(),
+                    expanded.Count);
+
                 if (expanded.Count <= ids.Count)
                 {
                     return;
@@ -201,15 +411,84 @@ public sealed class Mod : MelonMod
                 {
                     loot.Add(id);
                 }
-
-                MelonLogger.Msg(
-                    "ScavengingTweaks expanded dump loot table from {0} to {1} entries.",
-                    ids.Count,
-                    expanded.Count);
             }
             catch (Exception exception)
             {
                 MelonLogger.Error("ScavengingTweaks failed to adjust dump loot; original table is preserved.", exception);
+            }
+        }
+
+        private static string bestLootId;
+        private static long bestLootValue;
+
+        private static void UpdateBestLoot(Dictionary<string, long> values)
+        {
+            foreach (var pair in values)
+            {
+                if (bestLootId == null || pair.Value > bestLootValue)
+                {
+                    bestLootId = pair.Key;
+                    bestLootValue = pair.Value;
+                }
+            }
+        }
+
+        // The dump roll does not sample possibleLoot uniformly, so duplicating
+        // table entries cannot shift the outcome. Reshape the rolled result
+        // directly: low-value drops become the table's best item with
+        // probability (multiplier-1)/multiplier.
+        public static void UpgradeRolledLootPostfix(Il2CppSystem.Collections.Generic.List<GameItem> __result)
+        {
+            try
+            {
+                if (__result == null || __result.Count == 0 || bestLootId == null || HighValueMultiplier <= 1.0)
+                {
+                    return;
+                }
+
+                var upgradeChance = (HighValueMultiplier - 1.0) / HighValueMultiplier;
+                var upgraded = 0;
+                for (var index = 0; index < __result.Count; index++)
+                {
+                    var item = __result[index];
+                    if (item == null)
+                    {
+                        continue;
+                    }
+
+                    long value;
+                    try
+                    {
+                        value = item.GetBaseValue();
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (value >= bestLootValue || Random.Shared.NextDouble() >= upgradeChance)
+                    {
+                        continue;
+                    }
+
+                    var replacement = DirectoryMaster.Item(bestLootId, false);
+                    if (replacement == null)
+                    {
+                        continue;
+                    }
+
+                    __result[index] = replacement;
+                    upgraded++;
+                }
+
+                if (upgraded > 0)
+                {
+                    MelonLogger.Msg("ScavengingTweaks upgraded {0}/{1} scavenged drops to {2}.", upgraded, __result.Count, bestLootId);
+                }
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error("ScavengingTweaks failed to upgrade scavenged loot.", exception);
             }
         }
 
