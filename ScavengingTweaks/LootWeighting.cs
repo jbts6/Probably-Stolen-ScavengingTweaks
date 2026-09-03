@@ -130,10 +130,10 @@ public static class LootWeighting
                 continue;
             }
 
-            if (baseValues != null && baseValues.TryGetValue(lootId, out var value))
-            {
-                candidates.Add(new LootCandidate(lootId, value, index));
-            }
+            var value = baseValues != null && baseValues.TryGetValue(lootId, out var knownValue)
+                ? knownValue
+                : long.MinValue;
+            candidates.Add(new LootCandidate(lootId, value, index));
         }
 
         candidates.Sort(static (left, right) =>
@@ -164,8 +164,13 @@ public static class LootWeighting
             return MaxExtraCopiesPerEntry;
         }
 
-        var extraCopies = (int)Math.Floor(multiplier) - 1;
-        return Math.Clamp(extraCopies, 0, MaxExtraCopiesPerEntry);
+        var roundedMultiplier = Math.Round(multiplier, MidpointRounding.AwayFromZero);
+        if (roundedMultiplier > MaxExtraCopiesPerEntry + 1)
+        {
+            return MaxExtraCopiesPerEntry;
+        }
+
+        return (int)roundedMultiplier - 1;
     }
 
     private static int ScaleWeight(int baseWeight, double multiplier)

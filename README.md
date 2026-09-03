@@ -20,7 +20,7 @@ HighValueMultiplier = 2.0
 ForceDenseLayout = true
 ```
 
-`HighValueMultiplier` 只作用于垃圾场掉落表中按基础价值排序后最高的一半物品。`2.0` 会为这些条目各追加一份；`3.0` 会各追加两份。倍率小于或等于 `1.0` 时保持原始权重。
+`HighValueMultiplier` 只作用于垃圾场掉落表中按基础价值排序后最高的一半物品。倍率按四舍五入取最近整数档：`2.0` 会为这些条目各追加一份，`2.5` 与 `3.0` 一样各追加两份，`1.5` 与 `2.0` 一样各追加一份，最高封顶 `32x`。倍率小于或等于 `1.0` 时保持原始权重。无法解析基础价值的条目按最低价值参与排序，仍可填满“最高一半”的席位，保证掉落表较小时倍率不会失效。
 
 `ForceDenseLayout = true` 时，兼容补丁只在内存中关闭 InventorySorter 的 `GroupByTag`，让原 Mod 使用更紧凑的 `LayoutDense` 路径；设为 `false` 可恢复标签分组。补丁只拦截 `InventorySorter.Core` 发起的全局偏好保存，其他 Mod 的保存仍会执行。
 
@@ -34,7 +34,7 @@ ForceDenseLayout = true
 
 ## 构建
 
-需要 .NET 6 SDK，以及本地游戏目录中的 MelonLoader 和 IL2CPP 程序集。`GameRoot` 指向游戏根目录：
+需要 .NET 8 SDK（离线测试与 Mod 构建共用），以及本地游戏目录中的 MelonLoader 和 IL2CPP 程序集。`GameRoot` 指向游戏根目录：
 
 ```powershell
 dotnet run --project ScavengingTweaks.Tests/ScavengingTweaks.Tests.csproj -c Release
