@@ -29,6 +29,7 @@ internal static class LootWeightingTests
             DropSharesMultiTypePriorityFollowsConfigOrder();
             DropSharesDuplicateIdAssignedOnce();
             DropSharesParseIdList();
+            DropSharesPerTypeTopPicks();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }
@@ -271,6 +272,25 @@ internal static class LootWeightingTests
         var ids = DropSharing.ParseIdList(" satchel , mouse_trap ,, satchel, ");
         Ensure(ids.Count == 2 && ids[0] == "satchel" && ids[1] == "mouse_trap", "id list should trim, skip empties and dedupe");
         Ensure(DropSharing.ParseIdList(null).Count == 0, "null id list should parse to empty");
+    }
+
+    private static void DropSharesPerTypeTopPicks()
+    {
+        var items = new List<(string Id, IReadOnlyList<string> Types, long Value)>
+        {
+            ("scrap", new[] { "MATERIAL" }, 10),
+            ("fabric", new[] { "MATERIAL" }, 40),
+            ("nudka", new[] { "ALCOHOL" }, 85),
+            ("beer", new[] { "FOOD", "ALCOHOL" }, 18),
+            ("meat", new[] { "FOOD" }, 25),
+            ("broken", new[] { "MISC" }, 0)
+        };
+
+        var tops = DropSharing.PickPerTypeTopItems(items);
+        Ensure(tops.Count == 3, $"one top item per distinct type with value > 0, got {tops.Count}");
+        Ensure(tops.Contains("fabric") && tops.Contains("nudka") && tops.Contains("meat"), "highest value item per type should win");
+        Ensure(!tops.Contains("scrap") && !tops.Contains("beer"), "lower-value items should lose");
+        Ensure(!tops.Contains("broken"), "zero-value items should be skipped");
     }
 
     private static void Ensure(bool condition, string message)

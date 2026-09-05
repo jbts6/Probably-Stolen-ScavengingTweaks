@@ -32,6 +32,7 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<int> highValueFloor = null!;
     private static MelonPreferences_Entry<int> doubleLootChance = null!;
     private static MelonPreferences_Entry<string> doubleLootBonusIds = null!;
+    private static MelonPreferences_Entry<bool> doubleLootPerTypeTop = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -163,6 +164,14 @@ public sealed class Mod : MelonMod
             "satchel,mouse_trap",
             "Double loot bonus item ids",
             "Comma-separated item ids for the double loot bonus pool. Each has equal chance; an invalid id falls back to the next one.",
+            false,
+            false,
+            null);
+        doubleLootPerTypeTop = category.CreateEntry<bool>(
+            "DoubleLootPerTypeTop",
+            true,
+            "Add per-type top items to double loot pool",
+            "true: the highest-value item of every item type joins the double loot bonus pool automatically (on top of DoubleLootBonusIds).",
             false,
             false,
             null);
@@ -1267,6 +1276,95 @@ public sealed class Mod : MelonMod
                 }
             }
 
+        // 参考 NotEnoughItems 的 RuntimeItemScanner：DirectoryMaster 按 29 个目录枚举全量物品
+        private static readonly string[] ItemDirectoryNames =
+        {
+            "MiscItemDirectory", "ToolDirectory", "MedsItemDirectory", "FoodItemDirectory", "WineDirectory",
+            "HydroponicDirectory", "HusbandryDirectory", "MaterialDirectory", "GunsItemDirectory", "GunModDirectory",
+            "MeleeWeaponItemDirectory", "ExplosiveItemDirectory", "ArmorItemDirectory", "ContainerItemDirectory",
+            "FurnitureItemDirectory", "ModuleDirectory", "ModItemDirectory", "StationMachinery", "RuinedMachineDirectory",
+            "KeyItemDirectory", "OrganDirectory", "AmenitiesItemDirectory", "ConstructionItemDirectory", "EquipmentDirectory",
+            "ShipItemDirectory", "ShipSystemDirectory", "TechnicianBackpackDirectory", "PlayerAbilityItemDirectory", "UnusedDirectory"
+        };
+
+        private static List<string>? cachedPerTypeTopPool;
+
+        private static List<string> GetDoubleLootPool()
+        {
+            var pool = DropSharing.ParseIdList(doubleLootBonusIds.Value);
+            if (!doubleLootPerTypeTop.Value)
+            {
+                return pool;
+            }
+
+            if (cachedPerTypeTopPool == null)
+            {
+                cachedPerTypeTopPool = BuildPerTypeTopPool();
+                if (cachedPerTypeTopPool.Count > 0)
+                {
+                    MelonLogger.Msg(
+                        "ScavengingTweaks double loot per-type pool ({0}): {1}",
+                        cachedPerTypeTopPool.Count,
+                        string.Join(", ", cachedPerTypeTopPool));
+                }
+            }
+
+            foreach (var id in cachedPerTypeTopPool)
+            {
+                if (!pool.Contains(id))
+                {
+                    pool.Add(id);
+                }
+            }
+
+            return pool;
+        }
+
+        private static List<string> BuildPerTypeTopPool()
+        {
+            var items = new List<(string Id, IReadOnlyList<string> Types, long Value)>();
+            foreach (var directoryName in ItemDirectoryNames)
+            {
+                Il2CppSystem.Collections.Generic.List<string>? identifierList = null;
+                try
+                {
+                    identifierList = DirectoryMaster.GetIdentifierList<GameItem>(directoryName);
+                }
+                catch (Exception)
+                {
+                }
+
+                if (identifierList == null)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i < identifierList.Count; i++)
+                {
+                    var id = identifierList[i];
+                    if (string.IsNullOrWhiteSpace(id) || id.StartsWith("random_"))
+                    {
+                        continue; // random_* 是表占位符，运行时才解析，不直接作为奖励 ID
+                    }
+
+                    if (!TryGetBaseValue(id, out var value))
+                    {
+                        continue;
+                    }
+
+                    var types = ResolveItemTypes(id, null);
+                    if (types.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    items.Add((id, types, value));
+                }
+            }
+
+            return DropSharing.PickPerTypeTopItems(items);
+        }
+
         // 原版双倍掉落概率藏在 ScavHelper 的闭包字段里（无实例可改），
         // 这里在结果列表上模拟：按配置概率补一件奖励物品（池子由 DoubleLootBonusIds 配置）。
         private static void TryAppendDoubleLootBonus(Il2CppSystem.Collections.Generic.List<GameItem>? result)
@@ -1277,7 +1375,7 @@ public sealed class Mod : MelonMod
                 return;
             }
 
-            var pool = DropSharing.ParseIdList(doubleLootBonusIds.Value);
+            var pool = GetDoubleLootPool();
             if (pool.Count == 0)
             {
                 return;

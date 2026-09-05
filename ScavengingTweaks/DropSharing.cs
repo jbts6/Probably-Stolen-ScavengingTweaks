@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace ScavengingTweaks;
 
@@ -82,6 +83,37 @@ public static class DropSharing
         }
 
         return ids;
+    }
+
+    /// <summary>按类型挑出最高价值物品（每类型一个；价值 ≤ 0 跳过；平值取先见者，输出按类型名排序保证稳定）。</summary>
+    public static List<string> PickPerTypeTopItems(IReadOnlyList<(string Id, IReadOnlyList<string> Types, long Value)> items)
+    {
+        var best = new Dictionary<string, (long Value, string Id)>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.Id) || item.Value <= 0 || item.Types == null)
+            {
+                continue;
+            }
+
+            foreach (var type in item.Types)
+            {
+                if (string.IsNullOrWhiteSpace(type))
+                {
+                    continue;
+                }
+
+                if (!best.TryGetValue(type, out var current) || item.Value > current.Value)
+                {
+                    best[type] = (item.Value, item.Id);
+                }
+            }
+        }
+
+        return best.Keys
+            .OrderBy(k => k, StringComparer.Ordinal)
+            .Select(k => best[k].Id)
+            .ToList();
     }
 
     public static ShareResult ComputeShares(
