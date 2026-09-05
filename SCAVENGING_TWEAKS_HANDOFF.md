@@ -1,8 +1,34 @@
 # ScavengingTweaks 调试交接
 
-更新时间：2026-09-03 18:20
+更新时间：2026-09-05 09:30
 
-## 当前状态：✅ 双层权重调整完成，高价值物品占比显著提升
+## 当前状态：🆕 地面网格放大已实现，等待游戏内验收
+
+**新增功能（2026-09-05）**：拾荒地面网格放大，解除空间对拾荒收获量的限制
+
+- 设计文档：`docs/superpowers/specs/2026-09-05-ground-grid-design.md`
+- 实施计划：`docs/superpowers/plans/2026-09-05-ground-grid.md`
+- Git 基线：`13dd008`（feat: enlarge dumping-grounds ground grid）
+- 构建状态：✅ 编译通过（1 个既有警告，来自此前诊断代码，非本次引入），✅ 离线测试通过
+- Mod DLL：`Mods\ScavengingTweaks.dll` 2026-09-05 09:27 构建
+
+**实现要点**：
+
+- 新配置项 `GroundGridMultiplier`（默认 `3.0`，`1.0` = 关闭）：目标高度 = 原始高度 × 倍率
+- 路径 1（设置路径）：进入拾荒界面时改 `UISettings.current.floorLootGridHeight`
+- 路径 2（兜底重塑）：`ForceRebuild → SetShape → ResizePixels + Validate` 直接重塑 `Room.floorInventory` 并让 `groundLootWindow` 跟随（序列参照 ContainerUpgrade.dll 的验证实现）
+- 触发点：`MapUIManager.VisitScavenging` postfix + 现有 `ScavengePrefix`（每次拾取前再确保）
+- 原始高度按会话缓存（设置值一次、房间按 `roomId`），放大永不以放大后的值为基数
+- 新文件：`GroundGrid.cs`（纯逻辑，进离线测试）；游戏访问代码在 `Mod.cs`
+
+**游戏内验收清单**（重启游戏后执行）：
+
+1. 进拾荒界面，日志出现 `ScavengingTweaks ground grid enlarged: room=... {W}x{H} -> {W}x{目标}`，并记录哪条路径生效（窗口数值变化 = 路径 2 生效）
+2. 地面可堆放物品数约为原来 3 倍
+3. `groundLootWindow` 完整显示放大后的网格（若格子数量变多但不刷新，是 ForceRebuild 偏移失效，需对照新版偏移）
+4. 家中地板、探险途中普通房间地面尺寸不变
+
+## 上一阶段状态：✅ 双层权重调整完成，高价值物品占比显著提升
 
 **第五轮测试结果**：效果良好，基本都是高价值物品
 
