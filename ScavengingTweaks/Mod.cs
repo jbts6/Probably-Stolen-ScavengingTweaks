@@ -649,11 +649,12 @@ public sealed class Mod : MelonMod
 
         // 窗口默认锚定左上、向右下生长，会超出面板可视区；
         // 改为保持底边/右边原位，把窗口整体上移/左移，让新增格子向上、向左展开。
+        // 平移量按游戏实际应用的窗口尺寸计算（游戏会把请求尺寸修正为网格+原边距）。
         var rectTransform = window.rectTransform;
         if (rectTransform != null)
         {
-            var heightGrew = scaledHeight - windowHeightBefore;
-            var widthGrew = scaledWidth - windowWidthBefore;
+            var heightGrew = window.heightPixels - windowHeightBefore;
+            var widthGrew = window.widthPixels - windowWidthBefore;
             if (heightGrew != 0 || widthGrew != 0)
             {
                 var anchoredBefore = rectTransform.anchoredPosition;
@@ -665,6 +666,18 @@ public sealed class Mod : MelonMod
                     anchoredBefore,
                     rectTransform.anchoredPosition);
             }
+        }
+
+        try
+        {
+            // 游戏自带的停靠钳制：把窗口拉回带黑边的游戏区内（修正向左/向上的过度扩展）
+            PixelWindow.ReclampDockedWindows();
+            MelonLogger.Msg(
+                "ScavengingTweaks ground window after reclamp: anchored {0}.",
+                rectTransform != null ? rectTransform.anchoredPosition.ToString() : "n/a");
+        }
+        catch
+        {
         }
 
         MelonLogger.Msg(
