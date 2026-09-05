@@ -24,7 +24,8 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<string> endOfDayHotkey = null!;
     private static MelonPreferences_Entry<string> directScavengeHotkey = null!;
     private static MelonPreferences_Entry<string> itemTypeMultipliers = null!;
-    private static MelonPreferences_Entry<float> groundGridMultiplier = null!;
+    private static MelonPreferences_Entry<int> groundGridExtraColumns = null!;
+    private static MelonPreferences_Entry<int> groundGridExtraRows = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -95,11 +96,19 @@ public sealed class Mod : MelonMod
             false,
             false,
             null);
-        groundGridMultiplier = category.CreateEntry<float>(
-            "GroundGridMultiplier",
-            3.0f,
-            "Ground grid height multiplier",
-            "Multiplier applied to the dumping-grounds ground loot grid height. 1.0 keeps the vanilla size.",
+        groundGridExtraColumns = category.CreateEntry<int>(
+            "GroundGridExtraColumns",
+            6,
+            "Ground grid extra columns",
+            "Columns added to the dumping-grounds ground grid width. 0 keeps the vanilla width.",
+            false,
+            false,
+            null);
+        groundGridExtraRows = category.CreateEntry<int>(
+            "GroundGridExtraRows",
+            9,
+            "Ground grid extra rows",
+            "Rows added to the dumping-grounds ground grid height. 0 keeps the vanilla height.",
             false,
             false,
             null);
@@ -257,7 +266,8 @@ public sealed class Mod : MelonMod
 
     private static int MaxAttempts => Math.Max(1, maxAttempts.Value);
     private static double HighValueMultiplier => Math.Max(1.0, highValueMultiplier.Value);
-    private static double GroundGridMultiplier => Math.Max(1.0, groundGridMultiplier.Value);
+    private static int GroundGridExtraColumns => Math.Max(0, groundGridExtraColumns.Value);
+    private static int GroundGridExtraRows => Math.Max(0, groundGridExtraRows.Value);
     private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void ParseItemTypeMultipliers()
@@ -315,7 +325,7 @@ public sealed class Mod : MelonMod
         }
 
         var originalSetting = GroundGridState.GetOriginalSettingHeight(settings.floorLootGridHeight);
-        var settingTarget = GroundGridMath.ComputeTargetHeight(originalSetting, GroundGridMultiplier);
+        var settingTarget = GroundGridMath.ComputeTargetDimension(originalSetting, GroundGridExtraRows);
         if (settingTarget > 0)
         {
             settings.floorLootGridHeight = settingTarget;
@@ -345,14 +355,17 @@ public sealed class Mod : MelonMod
             return;
         }
 
-        var originalRoomHeight = GroundGridState.GetOriginalRoomHeight(room.roomId, shape.height);
-        var target = GroundGridMath.ComputeTargetHeight(originalRoomHeight, GroundGridMultiplier);
-        if (target < 0)
+        var roomId = room.roomId;
+        var originalRows = GroundGridState.GetOriginalHeight($"room:{roomId}:h", shape.height);
+        var originalColumns = GroundGridState.GetOriginalHeight($"room:{roomId}:w", shape.width);
+        var targetRows = GroundGridMath.ComputeTargetDimension(originalRows, GroundGridExtraRows);
+        var targetColumns = GroundGridMath.ComputeTargetDimension(originalColumns, GroundGridExtraColumns);
+        if (targetRows < 0 && targetColumns < 0)
         {
             return;
         }
 
-        EnlargeGrid(floor, master.raidScene?.groundLootWindow, target, $"raid room {room.roomId}");
+        EnlargeGrid(floor, master.raidScene?.groundLootWindow, targetColumns, targetRows, $"raid room {roomId}");
     }
 
     private static void ApplyGroundWindowPath()
@@ -410,11 +423,13 @@ public sealed class Mod : MelonMod
                     continue;
                 }
 
-                var originalHeight = GroundGridState.GetOriginalHeight("window:Ground", shape.height);
-                var target = GroundGridMath.ComputeTargetHeight(originalHeight, GroundGridMultiplier);
-                if (target > 0)
+                var originalHeight = GroundGridState.GetOriginalHeight("window:Ground:h", shape.height);
+                var originalWidth = GroundGridState.GetOriginalHeight("window:Ground:w", shape.width);
+                var targetRows = GroundGridMath.ComputeTargetDimension(originalHeight, GroundGridExtraRows);
+                var targetColumns = GroundGridMath.ComputeTargetDimension(originalWidth, GroundGridExtraColumns);
+                if (targetRows > 0 || targetColumns > 0)
                 {
-                    EnlargeGrid(grid, window, target, "ground window");
+                    EnlargeGrid(grid, window, targetColumns, targetRows, "ground window");
                 }
             }
         }
@@ -513,46 +528,55 @@ public sealed class Mod : MelonMod
         }
     }
 
-    private static void EnlargeGrid(GameGridInventory grid, PixelWindow? window, int target, string context)
+    private static void EnlargeGrid(GameGridInventory grid, PixelWindow? window, int targetColumns, int targetRows, string context)
     {
         var shape = grid.inventoryShape;
-        if (shape == null || shape.height >= target)
+        if (shape == null)
         {
             return;
         }
 
-        var width = shape.width;
+        // 只增不减：目标为 -1（该维度不调整）时保持当前值
+        var newColumns = Math.Max(shape.width, targetColumns);
+        var newRows = Math.Max(shape.height, targetRows);
+        if (newColumns == shape.width && newRows == shape.height)
+        {
+            return;
+        }
+
+        var originalColumns = shape.width;
         var originalRows = shape.height;
         var windowWidthBefore = window?.widthPixels ?? 0;
         var windowHeightBefore = window?.heightPixels ?? 0;
 
         ForceRebuildGrid(grid);
-        grid.SetShape(width, target);
+        grid.SetShape(newColumns, newRows);
 
         if (window == null)
         {
             MelonLogger.Msg(
-                "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {1}x{3} (no window bound).",
+                "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {3}x{4} (no window bound).",
                 context,
-                width,
+                originalColumns,
                 originalRows,
-                target);
+                newColumns,
+                newRows);
             return;
         }
 
-        // 窗口高度按行数等比缩放：按网格像素差估算会被窗口标题/内边距基数带偏，
-        // 导致网格内容溢出窗口底边（底部格子无法视）。
-        var scaledHeight = (int)Math.Round(windowHeightBefore * (double)target / originalRows);
-        window.ResizePixels(windowWidthBefore, scaledHeight);
+        // 窗口按格数等比缩放，保持格子像素尺寸不变
+        var scaledWidth = (int)Math.Round(windowWidthBefore * (double)newColumns / originalColumns);
+        var scaledHeight = (int)Math.Round(windowHeightBefore * (double)newRows / originalRows);
+        window.ResizePixels(scaledWidth, scaledHeight);
         window.Validate();
 
-        // 窗口默认锚定左上、向下生长，会超出面板底部可视区；
-        // 改为保持底边/右边原位，把窗口整体上移/左移，让新增行数向上展开。
+        // 窗口默认锚定左上、向右下生长，会超出面板可视区；
+        // 改为保持底边/右边原位，把窗口整体上移/左移，让新增格子向上、向左展开。
         var rectTransform = window.rectTransform;
         if (rectTransform != null)
         {
             var heightGrew = scaledHeight - windowHeightBefore;
-            var widthGrew = window.widthPixels - windowWidthBefore;
+            var widthGrew = scaledWidth - windowWidthBefore;
             if (heightGrew != 0 || widthGrew != 0)
             {
                 var anchoredBefore = rectTransform.anchoredPosition;
@@ -560,20 +584,19 @@ public sealed class Mod : MelonMod
                     anchoredBefore.x - widthGrew,
                     anchoredBefore.y + heightGrew);
                 MelonLogger.Msg(
-                    "ScavengingTweaks ground window moved: anchored {0} -> {1}, rect {2}x{3}.",
+                    "ScavengingTweaks ground window moved: anchored {0} -> {1}.",
                     anchoredBefore,
-                    rectTransform.anchoredPosition,
-                    rectTransform.rect.width,
-                    rectTransform.rect.height);
+                    rectTransform.anchoredPosition);
             }
         }
 
         MelonLogger.Msg(
-            "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {1}x{3} (window {4}x{5} -> {6}x{7}).",
+            "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {3}x{4} (window {5}x{6} -> {7}x{8}).",
             context,
-            width,
+            originalColumns,
             originalRows,
-            target,
+            newColumns,
+            newRows,
             windowWidthBefore,
             windowHeightBefore,
             window.widthPixels,
