@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using HarmonyLib;
 using Il2Cpp;
+using Il2CppInterop.Runtime.InteropTypes;
 using MelonLoader;
 using UnityEngine;
 
@@ -288,76 +289,320 @@ public sealed class Mod : MelonMod
         }
     }
 
+    private static bool loggedRaidChainDiagnostic;
+    private static bool loggedGroundWindowListing;
+
     private static void EnsureGroundGridEnlarged()
     {
         try
         {
-            var settings = UISettings.current;
-            if (settings != null)
-            {
-                var originalSetting = GroundGridState.GetOriginalSettingHeight(settings.floorLootGridHeight);
-                var settingTarget = GroundGridMath.ComputeTargetHeight(originalSetting, GroundGridMultiplier);
-                if (settingTarget > 0)
-                {
-                    settings.floorLootGridHeight = settingTarget;
-                }
-            }
-
-            var master = GameMaster.current;
-            if (master == null)
-            {
-                return;
-            }
-
-            var raidManager = master.raidManager;
-            var room = raidManager?.currentRoom;
-            var floor = room?.floorInventory;
-            var shape = floor?.inventoryShape;
-            if (room == null || floor == null || shape == null)
-            {
-                return;
-            }
-
-            var originalRoomHeight = GroundGridState.GetOriginalRoomHeight(room.roomId, shape.height);
-            var target = GroundGridMath.ComputeTargetHeight(originalRoomHeight, GroundGridMultiplier);
-            if (target < 0 || shape.height >= target)
-            {
-                return;
-            }
-
-            var width = shape.width;
-            var window = master.raidScene?.groundLootWindow;
-            var windowWidth = window?.widthPixels ?? 0;
-            var windowHeight = window?.heightPixels ?? 0;
-            var gridWidthBefore = floor.widthPixels;
-            var gridHeightBefore = floor.heightPixels;
-
-            ForceRebuildGrid(floor);
-            floor.SetShape(width, target);
-
-            var widthDelta = floor.widthPixels - gridWidthBefore;
-            var heightDelta = floor.heightPixels - gridHeightBefore;
-            if (window != null && (widthDelta != 0 || heightDelta != 0))
-            {
-                window.ResizePixels(windowWidth + widthDelta, windowHeight + heightDelta);
-                window.Validate();
-            }
-
-            MelonLogger.Msg(
-                "ScavengingTweaks ground grid enlarged: room={0} {1}x{2} -> {1}x{3} (window {4}x{5} -> {6}x{7}).",
-                room.roomId,
-                width,
-                shape.height,
-                target,
-                windowWidth,
-                windowHeight,
-                windowWidth + widthDelta,
-                windowHeight + heightDelta);
+            ApplyGroundSettingPath();
+            ApplyRaidRoomPath();
+            ApplyGroundWindowPath();
         }
         catch (Exception exception)
         {
             MelonLogger.Error("ScavengingTweaks could not enlarge the ground grid.", exception);
         }
+    }
+
+    private static void ApplyGroundSettingPath()
+    {
+        var settings = UISettings.current;
+        if (settings == null)
+        {
+            return;
+        }
+
+        var originalSetting = GroundGridState.GetOriginalSettingHeight(settings.floorLootGridHeight);
+        var settingTarget = GroundGridMath.ComputeTargetHeight(originalSetting, GroundGridMultiplier);
+        if (settingTarget > 0)
+        {
+            settings.floorLootGridHeight = settingTarget;
+        }
+    }
+
+    private static void ApplyRaidRoomPath()
+    {
+        var master = GameMaster.current;
+        if (master == null)
+        {
+            LogRaidChainDiagnostic("GameMaster.current is null");
+            return;
+        }
+
+        var raidManager = master.raidManager;
+        var room = raidManager?.currentRoom;
+        var floor = room?.floorInventory;
+        var shape = floor?.inventoryShape;
+        if (room == null || floor == null || shape == null)
+        {
+            LogRaidChainDiagnostic(
+                "raid chain incomplete: raidManager={0}, room={1}, floor={2}",
+                raidManager == null ? "null" : "ok",
+                room == null ? "null" : "ok",
+                floor == null ? "null" : "ok");
+            return;
+        }
+
+        var originalRoomHeight = GroundGridState.GetOriginalRoomHeight(room.roomId, shape.height);
+        var target = GroundGridMath.ComputeTargetHeight(originalRoomHeight, GroundGridMultiplier);
+        if (target < 0)
+        {
+            return;
+        }
+
+        EnlargeGrid(floor, master.raidScene?.groundLootWindow, target, $"raid room {room.roomId}");
+    }
+
+    private static void ApplyGroundWindowPath()
+    {
+        var windows = EnumeratePixelWindows();
+        var groundWindows = new List<PixelWindow>();
+        foreach (var window in windows)
+        {
+            try
+            {
+                if (string.Equals(window.titleString, "Ground", StringComparison.OrdinalIgnoreCase))
+                {
+                    groundWindows.Add(window);
+                }
+            }
+            catch
+            {
+                // 单个窗口标题读取失败不影响其余窗口
+            }
+        }
+
+        if (groundWindows.Count == 0)
+        {
+            LogGroundWindowListing(windows);
+            return;
+        }
+
+        foreach (var window in groundWindows)
+        {
+            var grids = new List<GameGridInventory>();
+            var seen = new HashSet<long>();
+            try
+            {
+                CollectGridsFromElement(window.childElement, 0, seen, grids);
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Warning("ScavengingTweaks ground window tree walk failed: {0}", exception.Message);
+                continue;
+            }
+
+            if (grids.Count == 0)
+            {
+                LogGroundDiagnosticOnce(
+                    "Ground window found but no grid inside (childElement={0}).",
+                    window.childElement == null ? "null" : "present");
+                continue;
+            }
+
+            foreach (var grid in grids)
+            {
+                var shape = grid.inventoryShape;
+                if (shape == null)
+                {
+                    continue;
+                }
+
+                var originalHeight = GroundGridState.GetOriginalHeight("window:Ground", shape.height);
+                var target = GroundGridMath.ComputeTargetHeight(originalHeight, GroundGridMultiplier);
+                if (target > 0)
+                {
+                    EnlargeGrid(grid, window, target, "ground window");
+                }
+            }
+        }
+    }
+
+    private static List<PixelWindow> EnumeratePixelWindows()
+    {
+        var windows = new List<PixelWindow>();
+        var seen = new HashSet<long>();
+
+        try
+        {
+            var handler = WindowsHandler.current;
+            if (handler?.visibleWindows != null)
+            {
+                foreach (var window in handler.visibleWindows)
+                {
+                    AddWindowUnique(window, windows, seen);
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            foreach (var window in PixelWindow.dockedFloating)
+            {
+                AddWindowUnique(window, windows, seen);
+            }
+        }
+        catch
+        {
+        }
+
+        return windows;
+    }
+
+    private static void AddWindowUnique(PixelWindow window, List<PixelWindow> windows, HashSet<long> seen)
+    {
+        if (window == null || !seen.Add(window.Pointer.ToInt64()))
+        {
+            return;
+        }
+
+        windows.Add(window);
+    }
+
+    private static void CollectGridsFromElement(object? element, int depth, HashSet<long> seen, List<GameGridInventory> grids)
+    {
+        if (element == null || depth > 4 || element is not Il2CppObjectBase il2cppObject)
+        {
+            return;
+        }
+
+        try
+        {
+            if (il2cppObject.TryCast<GameGridInventory>() is { } grid)
+            {
+                if (seen.Add(grid.Pointer.ToInt64()))
+                {
+                    grids.Add(grid);
+                }
+
+                return;
+            }
+
+            if (il2cppObject.TryCast<GridPixelElement>() is not { } gridElement)
+            {
+                return;
+            }
+
+            for (var x = 0; x < 16; x++)
+            {
+                for (var y = 0; y < 16; y++)
+                {
+                    PixelElement? child = null;
+                    try
+                    {
+                        child = gridElement.GetElement(x, y);
+                    }
+                    catch
+                    {
+                    }
+
+                    if (child != null)
+                    {
+                        CollectGridsFromElement(child, depth + 1, seen, grids);
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void EnlargeGrid(GameGridInventory grid, PixelWindow? window, int target, string context)
+    {
+        var shape = grid.inventoryShape;
+        if (shape == null || shape.height >= target)
+        {
+            return;
+        }
+
+        var width = shape.width;
+        var windowWidth = window?.widthPixels ?? 0;
+        var windowHeight = window?.heightPixels ?? 0;
+        var gridWidthBefore = grid.widthPixels;
+        var gridHeightBefore = grid.heightPixels;
+
+        ForceRebuildGrid(grid);
+        grid.SetShape(width, target);
+
+        var widthDelta = grid.widthPixels - gridWidthBefore;
+        var heightDelta = grid.heightPixels - gridHeightBefore;
+        if (window != null && (widthDelta != 0 || heightDelta != 0))
+        {
+            window.ResizePixels(windowWidth + widthDelta, windowHeight + heightDelta);
+            window.Validate();
+        }
+
+        MelonLogger.Msg(
+            "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {1}x{3} (window {4}x{5} -> {6}x{7}).",
+            context,
+            width,
+            shape.height,
+            target,
+            windowWidth,
+            windowHeight,
+            windowWidth + widthDelta,
+            windowHeight + heightDelta);
+    }
+
+    private static void LogRaidChainDiagnostic(string message, params object[] args)
+    {
+        if (loggedRaidChainDiagnostic)
+        {
+            return;
+        }
+
+        loggedRaidChainDiagnostic = true;
+        MelonLogger.Msg("ScavengingTweaks ground diagnostic: " + message, args);
+    }
+
+    private static void LogGroundDiagnosticOnce(string message, params object[] args)
+    {
+        if (loggedGroundWindowListing)
+        {
+            return;
+        }
+
+        loggedGroundWindowListing = true;
+        MelonLogger.Msg("ScavengingTweaks ground diagnostic: " + message, args);
+    }
+
+    private static void LogGroundWindowListing(List<PixelWindow> windows)
+    {
+        if (loggedGroundWindowListing)
+        {
+            return;
+        }
+
+        var builder = new System.Text.StringBuilder();
+        builder.Append("no 'Ground' window found; windows:");
+        foreach (var window in windows)
+        {
+            try
+            {
+                var title = window.titleString ?? "(untitled)";
+                var grids = new List<GameGridInventory>();
+                CollectGridsFromElement(window.childElement, 0, new HashSet<long>(), grids);
+                var dims = string.Join(
+                    ",",
+                    grids.ConvertAll(g =>
+                    {
+                        var s = g.inventoryShape;
+                        return s == null ? "?" : $"{s.width}x{s.height}";
+                    }));
+                builder.Append($" [{title}: {grids.Count} grid({dims})]");
+            }
+            catch
+            {
+            }
+        }
+
+        LogGroundDiagnosticOnce("{0}", builder.ToString());
     }
 
     // 偏移取自 ContainerUpgrade.dll 在当前游戏版本的验证实现（_lastShapeHash 等渲染缓存字段）。
