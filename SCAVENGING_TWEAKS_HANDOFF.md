@@ -1,8 +1,35 @@
 # ScavengingTweaks 调试交接
 
-更新时间：2026-09-05 10:15
+更新时间：2026-09-05 10:36
 
-## 当前状态：✅ 地面网格放大已验收可用
+## 当前状态：🆕 掉落类型配额已实现，等待游戏内验收
+
+**新增功能（2026-09-05）**：拾荒掉落从"双层倍乘"改为"分层配额"分布
+
+- 设计文档：`docs/superpowers/specs/2026-09-05-drop-shares-design.md`
+- 实施计划：`docs/superpowers/plans/2026-09-05-drop-shares.md`
+- 构建状态：✅ 编译通过（1 个既有警告），✅ 离线测试全过（含 6 组配额新用例）
+- Mod DLL：`Mods\ScavengingTweaks.dll` 2026-09-05 10:35 构建
+
+**实现要点**：
+
+- 新配置：`QuotaModeEnabled`（默认 true，false 回退旧倍乘逻辑）、`DropTypeShares`（默认 `MODULE:25,TOOL:25,FOOD:10,ALCOHOL:10,MEDICAL:5,MATERIAL:5,WEAPON:5`）、`LowTierShare`（15）、`HighValueFloor`（60）
+- 分层：价值 < 10 排除；≥60 进高价值层（占 85%，按类型配额均分）；10~59 进低端层（15% 均分）
+- 空桶（食品/材料/医疗/武器当前无高价值物品）自动出局，非空桶按比例归一；多类型物品按配置串顺序归桶；跨表重复 itemId 只分配一次
+- 万分比整数精确分配（Σ=10000，最大余数法）；物品 `m_BaseProbability` = 全局份额、外层表 = 表内物品份额和，数学上 P(物品)=份额 精确成立
+- 类型解析：`DirectoryMaster.Item(id).itemTypes`（游戏标签）优先，表名推断兜底，缓存进 `itemIdToTypes`
+- 恢复精度提升为万分比（原百分位截断在 0.005 概率时会被截成 0）
+- 预期效果：提取器/焊接器各 ~17.7%、nudka ~14.2%、每件模块 ~5.9%、低端合计 15%（原 nudka 垄断 ~26%）
+- 新文件 `DropSharing.cs`（纯逻辑）；首次拾荒时日志打印完整配额分布表
+
+**游戏内验收清单**（重启游戏后执行）：
+
+1. 首次拾荒日志出现 `quota bucket MODULE: share=25, items=6, ...` + `quota distribution applied`
+2. 实测 20+ 次：nudka ≈ 14%、提取器/焊接器各 ≈ 18%、模块各 ≈ 6%，无单物品 > 20%
+3. 垃圾（<10）不出现；高价值合计 ≈ 85%
+4. `QuotaModeEnabled=false` 重启：回到旧倍产行为（酒瓶恢复垄断）；测完改回 true
+
+## 上一阶段状态：✅ 地面网格放大已验收可用
 
 **实测结果（2026-09-05 10:09）**：进拾荒界面约 0.5 秒内网格自动放大，无需点击拾荒；12x9 → 18x18（+6 列 +9 行，`GroundGridExtraColumns`/`GroundGridExtraRows` 可调）。
 
