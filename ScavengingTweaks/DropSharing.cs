@@ -60,6 +60,30 @@ public static class DropSharing
         return null;
     }
 
+    /// <summary>解析逗号分隔的物品 ID 列表：去空白、去重、保序。</summary>
+    public static List<string> ParseIdList(string? config)
+    {
+        var ids = new List<string>();
+        if (string.IsNullOrWhiteSpace(config))
+        {
+            return ids;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var raw in config.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var id = raw.Trim();
+            if (id.Length == 0 || !seen.Add(id))
+            {
+                continue;
+            }
+
+            ids.Add(id);
+        }
+
+        return ids;
+    }
+
     public static ShareResult ComputeShares(
         IReadOnlyList<string> ids,
         IReadOnlyDictionary<string, long> values,

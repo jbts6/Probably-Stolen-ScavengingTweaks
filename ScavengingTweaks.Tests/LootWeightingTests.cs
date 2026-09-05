@@ -28,6 +28,7 @@ internal static class LootWeightingTests
             DropSharesExcludeBelowValue();
             DropSharesMultiTypePriorityFollowsConfigOrder();
             DropSharesDuplicateIdAssignedOnce();
+            DropSharesParseIdList();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }
@@ -263,6 +264,13 @@ internal static class LootWeightingTests
         };
         Func<string, IReadOnlyList<string>?> resolver = id => typesByItem.TryGetValue(id, out var t) ? t : null;
         return (ids, values, resolver);
+    }
+
+    private static void DropSharesParseIdList()
+    {
+        var ids = DropSharing.ParseIdList(" satchel , mouse_trap ,, satchel, ");
+        Ensure(ids.Count == 2 && ids[0] == "satchel" && ids[1] == "mouse_trap", "id list should trim, skip empties and dedupe");
+        Ensure(DropSharing.ParseIdList(null).Count == 0, "null id list should parse to empty");
     }
 
     private static void Ensure(bool condition, string message)

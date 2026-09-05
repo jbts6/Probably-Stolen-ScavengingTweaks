@@ -31,6 +31,7 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<int> lowTierShare = null!;
     private static MelonPreferences_Entry<int> highValueFloor = null!;
     private static MelonPreferences_Entry<int> doubleLootChance = null!;
+    private static MelonPreferences_Entry<string> doubleLootBonusIds = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -153,7 +154,15 @@ public sealed class Mod : MelonMod
             "DoubleLootChance",
             100,
             "Double loot chance (percent)",
-            "Chance to append a bonus item (satchel/mouse trap) when the vanilla double loot did not trigger. -1 keeps vanilla behavior.",
+            "Chance to append a bonus item (from DoubleLootBonusIds) when the vanilla double loot did not trigger. -1 keeps vanilla behavior.",
+            false,
+            false,
+            null);
+        doubleLootBonusIds = category.CreateEntry<string>(
+            "DoubleLootBonusIds",
+            "satchel,mouse_trap",
+            "Double loot bonus item ids",
+            "Comma-separated item ids for the double loot bonus pool. Each has equal chance; an invalid id falls back to the next one.",
             false,
             false,
             null);
@@ -318,7 +327,6 @@ public sealed class Mod : MelonMod
     private static int HighValueFloor => Math.Max(1, highValueFloor.Value);
     private static int DoubleLootChance => Math.Clamp(doubleLootChance.Value, -1, 100);
     private static readonly System.Random lootRandom = new();
-    private static readonly string[] DoubleLootBonusIds = { "satchel", "mouse_trap" };
     private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void ParseItemTypeMultipliers()
@@ -1260,11 +1268,17 @@ public sealed class Mod : MelonMod
             }
 
         // 原版双倍掉落概率藏在 ScavHelper 的闭包字段里（无实例可改），
-        // 这里在结果列表上模拟：按配置概率补一件奖励物品（挎包/捕鼠夹）。
+        // 这里在结果列表上模拟：按配置概率补一件奖励物品（池子由 DoubleLootBonusIds 配置）。
         private static void TryAppendDoubleLootBonus(Il2CppSystem.Collections.Generic.List<GameItem>? result)
         {
             var chance = DoubleLootChance;
             if (chance < 0 || result == null || result.Count == 0 || result.Count >= 2)
+            {
+                return;
+            }
+
+            var pool = DropSharing.ParseIdList(doubleLootBonusIds.Value);
+            if (pool.Count == 0)
             {
                 return;
             }
@@ -1274,7 +1288,7 @@ public sealed class Mod : MelonMod
                 return;
             }
 
-            var bonusId = DoubleLootBonusIds[lootRandom.Next(DoubleLootBonusIds.Length)];
+            var bonusId = pool[lootRandom.Next(pool.Count)];
             try
             {
                 var bonus = ItemSpawner.Spawn(bonusId);
@@ -1296,8 +1310,8 @@ public sealed class Mod : MelonMod
                 MelonLogger.Warning("ScavengingTweaks double loot bonus failed for {0}: {1}", bonusId, exception.Message);
             }
 
-            // 首选 ID 无效时尝试奖励池里的下一个
-            foreach (var fallbackId in DoubleLootBonusIds)
+            // 首选 ID 无效时按池子顺序尝试其余 ID
+            foreach (var fallbackId in pool)
             {
                 if (fallbackId == bonusId)
                 {
