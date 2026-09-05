@@ -20,7 +20,7 @@ public static class GroundGridMath
 
 public static class GroundGridState
 {
-    private static readonly Dictionary<int, int> OriginalHeightsByRoom = new();
+    private static readonly Dictionary<string, int> OriginalHeightsByKey = new();
     private static int originalSettingHeight = -1;
 
     public static int GetOriginalSettingHeight(int observed)
@@ -33,19 +33,24 @@ public static class GroundGridState
         return originalSettingHeight;
     }
 
-    public static int GetOriginalRoomHeight(int roomId, int observed)
+    public static int GetOriginalHeight(string key, int observed)
     {
-        if (OriginalHeightsByRoom.TryGetValue(roomId, out var height))
+        if (OriginalHeightsByKey.TryGetValue(key, out var height))
         {
             return height;
         }
 
         if (observed > 0)
         {
-            OriginalHeightsByRoom[roomId] = observed;
+            OriginalHeightsByKey[key] = observed;
             return observed;
         }
 
         return -1;
+    }
+
+    public static int GetOriginalRoomHeight(int roomId, int observed)
+    {
+        return GetOriginalHeight("room:" + roomId, observed);
     }
 }

@@ -24,6 +24,7 @@ internal static class LootWeightingTests
             GroundGridFractionalMultiplierRoundsUp();
             GroundGridSettingHeightCachedOnFirstObservation();
             GroundGridRoomHeightCachedPerRoom();
+            GroundGridStringKeyCache();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }
@@ -165,6 +166,14 @@ internal static class LootWeightingTests
         Ensure(GroundGridState.GetOriginalRoomHeight(7001, 12) == 4, "room cache must return the original on later calls");
         Ensure(GroundGridState.GetOriginalRoomHeight(7002, 6) == 6, "different rooms should cache independently");
         Ensure(GroundGridState.GetOriginalRoomHeight(7003, 0) == -1, "unrecorded room with non-positive height should return -1");
+    }
+
+    private static void GroundGridStringKeyCache()
+    {
+        Ensure(GroundGridState.GetOriginalHeight("win:Ground", 5) == 5, "string key should record the first positive height");
+        Ensure(GroundGridState.GetOriginalHeight("win:Ground", 15) == 5, "string key must return the original on later calls");
+        Ensure(GroundGridState.GetOriginalHeight("win:Other", 7) == 7, "different keys should cache independently");
+        Ensure(GroundGridState.GetOriginalHeight("win:Empty", 0) == -1, "unrecorded key with non-positive height should return -1");
     }
 
     private static void Ensure(bool condition, string message)
