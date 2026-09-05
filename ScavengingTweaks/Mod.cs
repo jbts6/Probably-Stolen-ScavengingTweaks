@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using HarmonyLib;
 using Il2Cpp;
 using MelonLoader;
@@ -22,6 +23,7 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<string> endOfDayHotkey = null!;
     private static MelonPreferences_Entry<string> directScavengeHotkey = null!;
     private static MelonPreferences_Entry<string> itemTypeMultipliers = null!;
+    private static MelonPreferences_Entry<float> groundGridMultiplier = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -89,6 +91,14 @@ public sealed class Mod : MelonMod
             "MODULE:3.0,TOOL:2.0,ALCOHOL:0.3",
             "Item type weight multipliers",
             "Comma-separated list of type:multiplier pairs (e.g., MODULE:3.0,ALCOHOL:0.3). Applied before high-value multiplier.",
+            false,
+            false,
+            null);
+        groundGridMultiplier = category.CreateEntry<float>(
+            "GroundGridMultiplier",
+            3.0f,
+            "Ground grid height multiplier",
+            "Multiplier applied to the dumping-grounds ground loot grid height. 1.0 keeps the vanilla size.",
             false,
             false,
             null);
@@ -246,6 +256,7 @@ public sealed class Mod : MelonMod
 
     private static int MaxAttempts => Math.Max(1, maxAttempts.Value);
     private static double HighValueMultiplier => Math.Max(1.0, highValueMultiplier.Value);
+    private static double GroundGridMultiplier => Math.Max(1.0, groundGridMultiplier.Value);
     private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void ParseItemTypeMultipliers()
@@ -277,6 +288,89 @@ public sealed class Mod : MelonMod
         }
     }
 
+    private static void EnsureGroundGridEnlarged()
+    {
+        try
+        {
+            var settings = UISettings.current;
+            if (settings != null)
+            {
+                var originalSetting = GroundGridState.GetOriginalSettingHeight(settings.floorLootGridHeight);
+                var settingTarget = GroundGridMath.ComputeTargetHeight(originalSetting, GroundGridMultiplier);
+                if (settingTarget > 0)
+                {
+                    settings.floorLootGridHeight = settingTarget;
+                }
+            }
+
+            var master = GameMaster.current;
+            if (master == null)
+            {
+                return;
+            }
+
+            var raidManager = master.raidManager;
+            var room = raidManager?.currentRoom;
+            var floor = room?.floorInventory;
+            var shape = floor?.inventoryShape;
+            if (room == null || floor == null || shape == null)
+            {
+                return;
+            }
+
+            var originalRoomHeight = GroundGridState.GetOriginalRoomHeight(room.roomId, shape.height);
+            var target = GroundGridMath.ComputeTargetHeight(originalRoomHeight, GroundGridMultiplier);
+            if (target < 0 || shape.height >= target)
+            {
+                return;
+            }
+
+            var width = shape.width;
+            var window = master.raidScene?.groundLootWindow;
+            var windowWidth = window?.widthPixels ?? 0;
+            var windowHeight = window?.heightPixels ?? 0;
+            var gridWidthBefore = floor.widthPixels;
+            var gridHeightBefore = floor.heightPixels;
+
+            ForceRebuildGrid(floor);
+            floor.SetShape(width, target);
+
+            var widthDelta = floor.widthPixels - gridWidthBefore;
+            var heightDelta = floor.heightPixels - gridHeightBefore;
+            if (window != null && (widthDelta != 0 || heightDelta != 0))
+            {
+                window.ResizePixels(windowWidth + widthDelta, windowHeight + heightDelta);
+                window.Validate();
+            }
+
+            MelonLogger.Msg(
+                "ScavengingTweaks ground grid enlarged: room={0} {1}x{2} -> {1}x{3} (window {4}x{5} -> {6}x{7}).",
+                room.roomId,
+                width,
+                shape.height,
+                target,
+                windowWidth,
+                windowHeight,
+                windowWidth + widthDelta,
+                windowHeight + heightDelta);
+        }
+        catch (Exception exception)
+        {
+            MelonLogger.Error("ScavengingTweaks could not enlarge the ground grid.", exception);
+        }
+    }
+
+    // 偏移取自 ContainerUpgrade.dll 在当前游戏版本的验证实现（_lastShapeHash 等渲染缓存字段）。
+    // 版本升级后失效的表现只是网格不刷新，不会崩溃。
+    private static void ForceRebuildGrid(GameGridInventory grid)
+    {
+        var pointer = grid.Pointer;
+        Marshal.WriteByte(pointer, 360, 1);
+        Marshal.WriteByte(pointer, 452, 0);
+        Marshal.WriteInt64(pointer, 440, -1L);
+        Marshal.WriteInt32(pointer, 448, 0);
+    }
+
     private static void InstallPatches()
     {
         var harmony = new HarmonyLib.Harmony(HarmonyId);
@@ -287,6 +381,7 @@ public sealed class Mod : MelonMod
         Patch(harmony, typeof(ScavHelper), "RollMinorWound", postfix: nameof(Patches.RollMinorWoundPostfix));
         Patch(harmony, typeof(ScavHelper), "RollMajorWound", postfix: nameof(Patches.RollMajorWoundPostfix));
         Patch(harmony, typeof(ScavHelper), "ScavengeDumpingGrounds", prefix: nameof(Patches.ScavengePrefix), postfix: nameof(Patches.ScavengePostfix));
+        Patch(harmony, typeof(MapUIManager), "VisitScavenging", postfix: nameof(Patches.VisitScavengingPostfix));
         Patch(harmony, typeof(ScavHelper), "GetRandomScavengedItem", postfix: nameof(Patches.ScavengedItemResultPostfix));
         Patch(
             harmony,
@@ -425,6 +520,7 @@ public sealed class Mod : MelonMod
 
         public static void ScavengePrefix()
         {
+            EnsureGroundGridEnlarged();
             activeScavengeAttempt = ++scavengeAttemptSequence;
             activeAttemptObservedRoll = false;
             blockedWoundDuringAttempt = false;
@@ -461,6 +557,11 @@ public sealed class Mod : MelonMod
             inScavengeWindow = false;
             activeScavengeAttempt = 0;
             blockedWoundDuringAttempt = false;
+        }
+
+        public static void VisitScavengingPostfix()
+        {
+            EnsureGroundGridEnlarged();
         }
 
         // If the original throws, the postfix never runs; the tick guard makes
