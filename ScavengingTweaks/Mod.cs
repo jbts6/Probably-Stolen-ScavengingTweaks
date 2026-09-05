@@ -522,32 +522,47 @@ public sealed class Mod : MelonMod
         }
 
         var width = shape.width;
-        var windowWidth = window?.widthPixels ?? 0;
-        var windowHeight = window?.heightPixels ?? 0;
-        var gridWidthBefore = grid.widthPixels;
-        var gridHeightBefore = grid.heightPixels;
+        var originalRows = shape.height;
+        var windowWidthBefore = window?.widthPixels ?? 0;
+        var windowHeightBefore = window?.heightPixels ?? 0;
 
         ForceRebuildGrid(grid);
         grid.SetShape(width, target);
 
-        var widthDelta = grid.widthPixels - gridWidthBefore;
-        var heightDelta = grid.heightPixels - gridHeightBefore;
-        if (window != null && (widthDelta != 0 || heightDelta != 0))
+        if (window == null)
         {
-            window.ResizePixels(windowWidth + widthDelta, windowHeight + heightDelta);
-            window.Validate();
+            MelonLogger.Msg(
+                "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {1}x{3} (no window bound).",
+                context,
+                width,
+                originalRows,
+                target);
+            return;
+        }
+
+        // 窗口高度按行数等比缩放：按网格像素差估算会被窗口标题/内边距基数带偏，
+        // 导致网格内容溢出窗口底边（底部格子无法视）。
+        var scaledHeight = (int)Math.Round(windowHeightBefore * (double)target / originalRows);
+        window.ResizePixels(windowWidthBefore, scaledHeight);
+        window.Validate();
+        try
+        {
+            PixelWindow.ReclampDockedWindows();
+        }
+        catch
+        {
         }
 
         MelonLogger.Msg(
             "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {1}x{3} (window {4}x{5} -> {6}x{7}).",
             context,
             width,
-            shape.height,
+            originalRows,
             target,
-            windowWidth,
-            windowHeight,
-            windowWidth + widthDelta,
-            windowHeight + heightDelta);
+            windowWidthBefore,
+            windowHeightBefore,
+            window.widthPixels,
+            window.heightPixels);
     }
 
     private static void LogRaidChainDiagnostic(string message, params object[] args)
