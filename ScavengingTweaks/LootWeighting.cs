@@ -72,7 +72,13 @@ public static class LootWeighting
             var lootId = lootIds[index];
             if (lootId != null && selectedIds.Contains(lootId))
             {
+                // 放大高价值物品
                 scaled[index] = ScaleWeight(scaled[index], multiplier);
+            }
+            else if (lootId != null && baseValues != null && baseValues.TryGetValue(lootId, out var value) && value < 10)
+            {
+                // 彻底屏蔽低价值垃圾物品（权重设为0）
+                scaled[index] = 0;
             }
         }
 
@@ -136,17 +142,28 @@ public static class LootWeighting
             }
         }
 
+        if (candidates.Count == 0)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
         candidates.Sort(static (left, right) =>
         {
             var valueOrder = right.Value.CompareTo(left.Value);
             return valueOrder != 0 ? valueOrder : left.FirstIndex.CompareTo(right.FirstIndex);
         });
 
+        // 动态阈值策略：只选择价值 >= 最高价值 * 0.6 的物品
+        var maxValue = candidates[0].Value;
+        var threshold = (long)(maxValue * 0.6);
+
         var selected = new HashSet<string>(StringComparer.Ordinal);
-        var selectedCount = (candidates.Count + 1) / 2;
-        for (var index = 0; index < selectedCount; index++)
+        for (var index = 0; index < candidates.Count; index++)
         {
-            selected.Add(candidates[index].Id);
+            if (candidates[index].Value >= threshold)
+            {
+                selected.Add(candidates[index].Id);
+            }
         }
 
         return selected;

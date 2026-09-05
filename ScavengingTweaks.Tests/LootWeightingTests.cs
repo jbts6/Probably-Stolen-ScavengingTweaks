@@ -50,9 +50,10 @@ internal static class LootWeightingTests
 
         var result = LootWeighting.ExpandHighValueEntries(input, values, 2.0);
 
-        Ensure(result.Count == 7, "a 2x multiplier should append one copy per selected entry");
+        // 动态阈值 0.6: 最高价值100，阈值=60，只有"high"(100)符合
+        Ensure(result.Count == 6, "a 2x multiplier should append one copy per selected entry");
         Ensure(result.Count(id => id == "low") == 1, "the lowest-value entry should keep its original weight");
-        Ensure(result.Count(id => id == "mid") == 2, "the middle-value entry should be selected in the top half");
+        Ensure(result.Count(id => id == "mid") == 1, "mid-value entry below threshold should not be doubled");
         Ensure(result.Count(id => id == "high") == 4, "all original high-value occurrences should be doubled");
     }
 
@@ -87,7 +88,9 @@ internal static class LootWeightingTests
 
         var result = LootWeighting.ScaleHighValueWeights(ids, weights, values, 2.0);
 
-        Ensure(result.SequenceEqual(new[] { 2, 6, 10 }), "a 2x multiplier should scale only the highest-value half");
+        // 动态阈值 0.6: 最高价值100，阈值=60，只有"high"(100)>=60
+        // low=5被屏蔽(< 10)，权重设为0
+        Ensure(result.SequenceEqual(new[] { 0, 3, 10 }), "a 2x multiplier should scale high values and zero out values < 10");
     }
 
     private static void WeightScalingClampsOverflow()
