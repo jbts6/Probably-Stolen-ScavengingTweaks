@@ -301,18 +301,21 @@ public sealed class Mod : MelonMod
 
     private static bool loggedRaidChainDiagnostic;
     private static bool loggedGroundWindowListing;
+    private static bool pendingGroundWindowEnsure;
+    private static int groundWindowEnsureFrames;
 
-    private static void EnsureGroundGridEnlarged()
+    private static bool EnsureGroundGridEnlarged()
     {
         try
         {
             ApplyGroundSettingPath();
             ApplyRaidRoomPath();
-            ApplyGroundWindowPath();
+            return ApplyGroundWindowPath();
         }
         catch (Exception exception)
         {
             MelonLogger.Error("ScavengingTweaks could not enlarge the ground grid.", exception);
+            return true;
         }
     }
 
@@ -368,7 +371,7 @@ public sealed class Mod : MelonMod
         EnlargeGrid(floor, master.raidScene?.groundLootWindow, targetColumns, targetRows, $"raid room {roomId}");
     }
 
-    private static void ApplyGroundWindowPath()
+    private static bool ApplyGroundWindowPath()
     {
         var windows = EnumeratePixelWindows();
         var groundWindows = new List<PixelWindow>();
@@ -390,7 +393,7 @@ public sealed class Mod : MelonMod
         if (groundWindows.Count == 0)
         {
             LogGroundWindowListing(windows);
-            return;
+            return false;
         }
 
         foreach (var window in groundWindows)
@@ -433,6 +436,8 @@ public sealed class Mod : MelonMod
                 }
             }
         }
+
+        return true;
     }
 
     private static List<PixelWindow> EnumeratePixelWindows()
@@ -548,9 +553,13 @@ public sealed class Mod : MelonMod
         var originalRows = shape.height;
         var windowWidthBefore = window?.widthPixels ?? 0;
         var windowHeightBefore = window?.heightPixels ?? 0;
+        var gridWidthBefore = grid.widthPixels;
+        var gridHeightBefore = grid.heightPixels;
 
         ForceRebuildGrid(grid);
         grid.SetShape(newColumns, newRows);
+        var gridWidthAfter = grid.widthPixels;
+        var gridHeightAfter = grid.heightPixels;
 
         if (window == null)
         {
@@ -591,7 +600,7 @@ public sealed class Mod : MelonMod
         }
 
         MelonLogger.Msg(
-            "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {3}x{4} (window {5}x{6} -> {7}x{8}).",
+            "ScavengingTweaks ground grid enlarged ({0}): {1}x{2} -> {3}x{4} (window {5}x{6} -> {7}x{8}, grid px {9}x{10} -> {11}x{12}).",
             context,
             originalColumns,
             originalRows,
@@ -600,7 +609,11 @@ public sealed class Mod : MelonMod
             windowWidthBefore,
             windowHeightBefore,
             window.widthPixels,
-            window.heightPixels);
+            window.heightPixels,
+            gridWidthBefore,
+            gridHeightBefore,
+            gridWidthAfter,
+            gridHeightAfter);
     }
 
     private static void LogRaidChainDiagnostic(string message, params object[] args)
@@ -680,6 +693,8 @@ public sealed class Mod : MelonMod
         Patch(harmony, typeof(ScavHelper), "RollMajorWound", postfix: nameof(Patches.RollMajorWoundPostfix));
         Patch(harmony, typeof(ScavHelper), "ScavengeDumpingGrounds", prefix: nameof(Patches.ScavengePrefix), postfix: nameof(Patches.ScavengePostfix));
         Patch(harmony, typeof(MapUIManager), "VisitScavenging", postfix: nameof(Patches.VisitScavengingPostfix));
+        Patch(harmony, typeof(MapUIManager), "LeaveScavenging", postfix: nameof(Patches.LeaveScavengingPostfix));
+        Patch(harmony, typeof(MapUIManager), "Update", postfix: nameof(Patches.MapUIManagerUpdatePostfix));
         Patch(harmony, typeof(ScavHelper), "GetRandomScavengedItem", postfix: nameof(Patches.ScavengedItemResultPostfix));
         Patch(
             harmony,
@@ -859,7 +874,29 @@ public sealed class Mod : MelonMod
 
         public static void VisitScavengingPostfix()
         {
-            EnsureGroundGridEnlarged();
+            // 窗口标题在面板完全初始化后才出现；当场没找到就交给逐帧重试
+            pendingGroundWindowEnsure = !EnsureGroundGridEnlarged();
+            groundWindowEnsureFrames = 0;
+        }
+
+        public static void LeaveScavengingPostfix()
+        {
+            pendingGroundWindowEnsure = false;
+            groundWindowEnsureFrames = 0;
+        }
+
+        public static void MapUIManagerUpdatePostfix()
+        {
+            if (!pendingGroundWindowEnsure)
+            {
+                return;
+            }
+
+            if (EnsureGroundGridEnlarged() || ++groundWindowEnsureFrames > 600)
+            {
+                pendingGroundWindowEnsure = false;
+                groundWindowEnsureFrames = 0;
+            }
         }
 
         // If the original throws, the postfix never runs; the tick guard makes
