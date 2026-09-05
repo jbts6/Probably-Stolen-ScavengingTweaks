@@ -33,6 +33,7 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<int> doubleLootChance = null!;
     private static MelonPreferences_Entry<string> doubleLootBonusIds = null!;
     private static MelonPreferences_Entry<bool> doubleLootPerTypeTop = null!;
+    private static MelonPreferences_Entry<bool> detailedScavengeLogging = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -175,6 +176,14 @@ public sealed class Mod : MelonMod
             false,
             false,
             null);
+        detailedScavengeLogging = category.CreateEntry<bool>(
+            "DetailedScavengeLogging",
+            false,
+            "Enable detailed scavenge item logging",
+            "When true, inspect and log every returned GameItem. Disabled by default because reflection and per-item logging can stall the first scavenging attempt.",
+            false,
+            false,
+            null);
 
         ParseItemTypeMultipliers();
         InstallPatches();
@@ -189,6 +198,16 @@ public sealed class Mod : MelonMod
 
     public override void OnUpdate()
     {
+        try
+        {
+            // 目录访问和价值解析分摊到游戏帧中，避免首次拾荒同步阻塞。
+            Patches.AdvanceDoubleLootPoolWarmup();
+        }
+        catch (Exception exception)
+        {
+            MelonLogger.Error("ScavengingTweaks double loot pool warmup failed.", exception);
+        }
+
         if (!testHotkeysEnabled.Value)
         {
             return;
@@ -955,8 +974,8 @@ public sealed class Mod : MelonMod
 
         public static void VisitScavengingPostfix()
         {
-            // 窗口标题在面板完全初始化后才出现；当场没找到就交给逐帧重试
-            pendingGroundWindowEnsure = !EnsureGroundGridEnlarged();
+            // 窗口标题在面板完全初始化后才出现，统一交给逐帧重试，避免进入拾荒时同步扫描 UI。
+            pendingGroundWindowEnsure = true;
             groundWindowEnsureFrames = 0;
         }
 
@@ -1049,7 +1068,7 @@ public sealed class Mod : MelonMod
             count = __result?.Count ?? 0;
 
             // 记录每个拾取到的物品的详细信息
-            if (__result != null && count > 0)
+            if (detailedScavengeLogging.Value && __result != null && count > 0)
             {
                 for (int i = 0; i < count; i++)
                 {
@@ -1300,7 +1319,31 @@ public sealed class Mod : MelonMod
             "ShipItemDirectory", "ShipSystemDirectory", "TechnicianBackpackDirectory", "PlayerAbilityItemDirectory", "UnusedDirectory"
         };
 
-        private static List<string>? cachedPerTypeTopPool;
+        private static DoubleLootPoolCache? perTypeTopPoolCache;
+
+        /// <summary>Advances the shared bonus catalog without scanning it during a scavenging attempt.</summary>
+        public static void AdvanceDoubleLootPoolWarmup()
+        {
+            if (!doubleLootPerTypeTop.Value || PlayerStore.instance == null)
+            {
+                return;
+            }
+
+            perTypeTopPoolCache ??= new DoubleLootPoolCache(EnumeratePerTypeTopPoolCandidates());
+            if (perTypeTopPoolCache.IsComplete)
+            {
+                return;
+            }
+
+            perTypeTopPoolCache.Advance(1);
+            if (perTypeTopPoolCache.IsComplete)
+            {
+                MelonLogger.Msg(
+                    "ScavengingTweaks double loot per-type pool ({0}) warmed up: {1}",
+                    perTypeTopPoolCache.Items.Count,
+                    string.Join(", ", perTypeTopPoolCache.Items));
+            }
+        }
 
         private static List<string> GetDoubleLootPool()
         {
@@ -1310,19 +1353,13 @@ public sealed class Mod : MelonMod
                 return pool;
             }
 
-            if (cachedPerTypeTopPool == null)
+            if (perTypeTopPoolCache == null || !perTypeTopPoolCache.IsComplete)
             {
-                cachedPerTypeTopPool = BuildPerTypeTopPool();
-                if (cachedPerTypeTopPool.Count > 0)
-                {
-                    MelonLogger.Msg(
-                        "ScavengingTweaks double loot per-type pool ({0}): {1}",
-                        cachedPerTypeTopPool.Count,
-                        string.Join(", ", cachedPerTypeTopPool));
-                }
+                // 预热尚未完成时仅使用显式配置，避免在拾荒热路径同步扫描全目录。
+                return pool;
             }
 
-            foreach (var id in cachedPerTypeTopPool)
+            foreach (var id in perTypeTopPoolCache.Items)
             {
                 if (!pool.Contains(id))
                 {
@@ -1333,9 +1370,8 @@ public sealed class Mod : MelonMod
             return pool;
         }
 
-        private static List<string> BuildPerTypeTopPool()
+        private static IEnumerable<(string Id, IReadOnlyList<string> Types, long Value)> EnumeratePerTypeTopPoolCandidates()
         {
-            var items = new List<(string Id, IReadOnlyList<string> Types, long Value)>();
             foreach (var directoryName in ItemDirectoryNames)
             {
                 Il2CppSystem.Collections.Generic.List<string>? identifierList = null;
@@ -1343,10 +1379,16 @@ public sealed class Mod : MelonMod
                 {
                     identifierList = DirectoryMaster.GetIdentifierList<GameItem>(directoryName);
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
+                    MelonLogger.Warning(
+                        "ScavengingTweaks could not read item directory {0} during double loot warmup: {1}",
+                        directoryName,
+                        exception.Message);
                 }
 
+                // Directory reads and rejected entries must also use a warmup step.
+                yield return default;
                 if (identifierList == null)
                 {
                     continue;
@@ -1357,25 +1399,26 @@ public sealed class Mod : MelonMod
                     var id = identifierList[i];
                     if (string.IsNullOrWhiteSpace(id) || id.StartsWith("random_"))
                     {
+                        yield return default;
                         continue; // random_* 是表占位符，运行时才解析，不直接作为奖励 ID
                     }
 
                     if (!TryGetBaseValue(id, out var value))
                     {
+                        yield return default;
                         continue;
                     }
 
                     var types = ResolveItemTypes(id, null);
                     if (types.Count == 0)
                     {
+                        yield return default;
                         continue;
                     }
 
-                    items.Add((id, types, value));
+                    yield return (id, types, value);
                 }
             }
-
-            return DropSharing.PickPerTypeTopItems(items);
         }
 
         // 原版双倍掉落概率藏在 ScavHelper 的闭包字段里（无实例可改），
@@ -1508,7 +1551,8 @@ public sealed class Mod : MelonMod
                             // 诊断：打印每个物品的详细信息
                             if (shouldDebug)
                             {
-                                var hasValue = TryGetBaseValue(itemId, out var debugValue);
+                                var debugValue = 0L;
+                                var hasValue = !string.IsNullOrWhiteSpace(itemId) && TryGetBaseValue(itemId, out debugValue);
                                 MelonLogger.Msg("    item #{0}: id={1}, hasValue={2}, value={3}",
                                     itemIndex + 1, itemId ?? "(null)", hasValue, debugValue);
                             }

@@ -30,6 +30,7 @@ internal static class LootWeightingTests
             DropSharesDuplicateIdAssignedOnce();
             DropSharesParseIdList();
             DropSharesPerTypeTopPicks();
+            ScavengingRegressionTests.Run();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }

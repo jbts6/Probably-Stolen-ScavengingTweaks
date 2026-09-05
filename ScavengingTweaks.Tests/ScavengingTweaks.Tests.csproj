@@ -12,5 +12,6 @@
     <Compile Include="..\ScavengingTweaks\GroundGrid.cs" Link="GroundGrid.cs" />
     <Compile Include="..\ScavengingTweaks\DropSharing.cs" Link="DropSharing.cs" />
     <Compile Include="..\ScavengingTweaks\ScavengingCounter.cs" Link="ScavengingCounter.cs" />
+    <Compile Include="..\ScavengingTweaks\DoubleLootPoolCache.cs" Link="DoubleLootPoolCache.cs" />
   </ItemGroup>
 </Project>
