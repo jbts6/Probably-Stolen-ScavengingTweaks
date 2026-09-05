@@ -43,6 +43,7 @@ public sealed class Mod : MelonMod
     private static long activeScavengeAttempt;
     private static bool activeAttemptObservedRoll;
     private static bool blockedWoundDuringAttempt;
+    private static readonly ScavengingRecovery woundRecovery = new();
     private static bool warnedOutsideWindow;
 
     public override void OnInitializeMelon()
@@ -933,10 +934,10 @@ public sealed class Mod : MelonMod
 
         public static void ScavengePrefix()
         {
-            EnsureGroundGridEnlarged();
             activeScavengeAttempt = ++scavengeAttemptSequence;
             activeAttemptObservedRoll = false;
             blockedWoundDuringAttempt = false;
+            woundRecovery.Reset();
             inScavengeWindow = true;
             scavengeWindowTick = Environment.TickCount64;
             pendingRestores.Clear();
@@ -947,7 +948,12 @@ public sealed class Mod : MelonMod
 
         public static void ScavengePostfix()
         {
-            // Postfix 不再需要手动生成，因为 Prefix 已经处理了
+            woundRecovery.ResolveIfNeeded(
+                activeScavengeAttempt != 0,
+                blockedWoundDuringAttempt,
+                activeAttemptObservedRoll,
+                ResolveBlockedWoundAttempt);
+
             if (activeScavengeAttempt != 0)
             {
                 if (activeAttemptObservedRoll)
@@ -1034,8 +1040,54 @@ public sealed class Mod : MelonMod
 
         private static void ResolveBlockedWoundAttempt()
         {
-            // 简化逻辑：只阻止受伤，接受空拾荒作为代价
-            // 玩家不会受伤，可以继续拾荒，但偶尔会空手而归
+            try
+            {
+                var drops = ScavHelper.GetRandomScavengedItem();
+                var count = drops?.Count ?? 0;
+                if (drops == null || count == 0)
+                {
+                    MelonLogger.Msg(
+                        "ScavengingTweaks wound fallback produced no random loot (sequence={0}).",
+                        activeScavengeAttempt);
+                    return;
+                }
+
+                var emporium = EmporiumEntry.Instance;
+                var inventory = emporium?.afterhourInventory;
+                if (emporium == null || inventory == null)
+                {
+                    MelonLogger.Warning(
+                        "ScavengingTweaks wound fallback generated {0} item(s), but the after-hours inventory was unavailable (sequence={1}).",
+                        count,
+                        activeScavengeAttempt);
+                    return;
+                }
+
+                var submitted = 0;
+                for (var index = 0; index < drops.Count; index++)
+                {
+                    var item = drops[index];
+                    if (item == null)
+                    {
+                        continue;
+                    }
+
+                    var transferResult = GraphUtils.TryAcceptAll(inventory.Cast<GraphNodeStorage>(), item, -1);
+                    submitted++;
+                    MelonLogger.Msg("ScavengingTweaks wound fallback item #{0}: inventory transfer result={1}.", index + 1, transferResult);
+                }
+
+                MelonLogger.Msg(
+                    "ScavengingTweaks wound fallback submitted {0} random item(s) to the after-hours inventory (sequence={1}).",
+                    submitted,
+                    activeScavengeAttempt);
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Error(
+                    "ScavengingTweaks wound fallback failed for sequence=" + activeScavengeAttempt,
+                    exception);
+            }
         }
 
         public sealed class TableWeightState

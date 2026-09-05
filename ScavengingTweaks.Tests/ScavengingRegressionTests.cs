@@ -11,6 +11,7 @@ internal static class ScavengingRegressionTests
         WarmupKeepsTheFullCatalogSelection();
         WarmupYieldsWhenTheFrameBudgetIsUsed();
         InvalidCandidatesConsumeWarmupBudget();
+        BlockedWoundGetsLootWithoutDuplicatingNormalDrops();
     }
 
     private static void PoolReadsDoNotScanAndWarmupIsBounded()
@@ -52,6 +53,28 @@ internal static class ScavengingRegressionTests
         }
 
         Ensure(cache.Items.SequenceEqual(DropSharing.PickPerTypeTopItems(catalog)), "incremental selection must match the original full-catalog reward pool");
+    }
+
+    private static void BlockedWoundGetsLootWithoutDuplicatingNormalDrops()
+    {
+        var recoveries = 0;
+        var recovery = new ScavengingRecovery();
+        Action deliver = () => recoveries++;
+        recovery.ResolveIfNeeded(true, true, false, deliver);
+        Ensure(recoveries == 1, "a blocked wound without drops must receive one loot resolution");
+        recovery.ResolveIfNeeded(true, true, false, deliver);
+        Ensure(recoveries == 1, "a second recovery callback must not duplicate loot");
+        recovery.Reset();
+        recovery.ResolveIfNeeded(true, true, true, deliver);
+        recovery.ResolveIfNeeded(true, false, false, deliver);
+        recovery.ResolveIfNeeded(false, true, false, deliver);
+        Ensure(recoveries == 1, "normal drops, empty non-wound attempts and unrelated wounds must not receive extra loot");
+        recovery.ResolveIfNeeded(true, true, false, () =>
+        {
+            recoveries++;
+            recovery.ResolveIfNeeded(true, true, false, deliver);
+        });
+        Ensure(recoveries == 2, "recovery must guard against reentrant callbacks and reset for the next attempt");
     }
 
     private static void WarmupYieldsWhenTheFrameBudgetIsUsed()
