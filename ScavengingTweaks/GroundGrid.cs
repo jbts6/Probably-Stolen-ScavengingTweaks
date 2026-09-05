@@ -6,15 +6,17 @@ namespace ScavengingTweaks;
 // 纯逻辑，无游戏类型依赖；由 ScavengingTweaks.Tests 直接编译。
 public static class GroundGridMath
 {
-    public static int ComputeTargetHeight(int originalHeight, double multiplier)
+    /// <summary>
+    /// 目标尺寸 = 原始尺寸 + 新增格数。-1 表示不调整（新增格数 &lt;= 0 或原始尺寸非法）。
+    /// </summary>
+    public static int ComputeTargetDimension(int original, int extra)
     {
-        if (originalHeight <= 0 || multiplier <= 1.0)
+        if (original <= 0 || extra <= 0)
         {
             return -1;
         }
 
-        var target = (int)Math.Ceiling(originalHeight * multiplier);
-        return target > originalHeight ? target : -1;
+        return original + extra;
     }
 }
 
@@ -47,10 +49,5 @@ public static class GroundGridState
         }
 
         return -1;
-    }
-
-    public static int GetOriginalRoomHeight(int roomId, int observed)
-    {
-        return GetOriginalHeight("room:" + roomId, observed);
     }
 }

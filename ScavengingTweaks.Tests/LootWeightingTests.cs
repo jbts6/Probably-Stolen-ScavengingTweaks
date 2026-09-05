@@ -18,13 +18,10 @@ internal static class LootWeightingTests
             MultiplierBelowOneDoesNotChangeEntries();
             ConfiguredRemainingAttemptsNeverGoNegative();
             LegacyInjectedCountIsDetected();
-            GroundGridTargetHeightTripledByDefault();
-            GroundGridMultiplierOneMeansOff();
-            GroundGridInvalidOriginalRejected();
-            GroundGridFractionalMultiplierRoundsUp();
             GroundGridSettingHeightCachedOnFirstObservation();
-            GroundGridRoomHeightCachedPerRoom();
             GroundGridStringKeyCache();
+            GroundGridExtraColumnsAndRowsAdded();
+            GroundGridZeroExtraMeansOff();
             Console.WriteLine("LootWeighting tests passed.");
             return 0;
         }
@@ -131,26 +128,17 @@ internal static class LootWeightingTests
         Ensure(!ScavengingCounter.IsLegacyInjectedCount(10, 5), "a vanilla-sized used count should not be migrated");
     }
 
-    private static void GroundGridTargetHeightTripledByDefault()
+    private static void GroundGridExtraColumnsAndRowsAdded()
     {
-        Ensure(GroundGridMath.ComputeTargetHeight(3, 3.0) == 9, "3 rows at 3x should become 9");
+        Ensure(GroundGridMath.ComputeTargetDimension(12, 6) == 18, "12 columns plus 6 extra should become 18");
+        Ensure(GroundGridMath.ComputeTargetDimension(9, 9) == 18, "9 rows plus 9 extra should become 18");
     }
 
-    private static void GroundGridMultiplierOneMeansOff()
+    private static void GroundGridZeroExtraMeansOff()
     {
-        Ensure(GroundGridMath.ComputeTargetHeight(3, 1.0) == -1, "multiplier 1.0 should disable enlargement");
-        Ensure(GroundGridMath.ComputeTargetHeight(3, 0.5) == -1, "multiplier below 1.0 should disable enlargement");
-    }
-
-    private static void GroundGridInvalidOriginalRejected()
-    {
-        Ensure(GroundGridMath.ComputeTargetHeight(0, 3.0) == -1, "zero original height should be rejected");
-        Ensure(GroundGridMath.ComputeTargetHeight(-2, 3.0) == -1, "negative original height should be rejected");
-    }
-
-    private static void GroundGridFractionalMultiplierRoundsUp()
-    {
-        Ensure(GroundGridMath.ComputeTargetHeight(3, 2.1) == 7, "fractional target should round up to keep capacity");
+        Ensure(GroundGridMath.ComputeTargetDimension(9, 0) == -1, "zero extra cells should disable enlargement");
+        Ensure(GroundGridMath.ComputeTargetDimension(0, 6) == -1, "invalid original dimension should be rejected");
+        Ensure(GroundGridMath.ComputeTargetDimension(-2, 6) == -1, "negative original dimension should be rejected");
     }
 
     private static void GroundGridSettingHeightCachedOnFirstObservation()
@@ -158,14 +146,6 @@ internal static class LootWeightingTests
         Ensure(GroundGridState.GetOriginalSettingHeight(3) == 3, "first positive observation should be recorded");
         Ensure(GroundGridState.GetOriginalSettingHeight(9) == 3, "later enlarged observation must not overwrite the original");
         Ensure(GroundGridState.GetOriginalSettingHeight(0) == 3, "non-positive observation must not clear the cache");
-    }
-
-    private static void GroundGridRoomHeightCachedPerRoom()
-    {
-        Ensure(GroundGridState.GetOriginalRoomHeight(7001, 4) == 4, "room cache should record the first positive height");
-        Ensure(GroundGridState.GetOriginalRoomHeight(7001, 12) == 4, "room cache must return the original on later calls");
-        Ensure(GroundGridState.GetOriginalRoomHeight(7002, 6) == 6, "different rooms should cache independently");
-        Ensure(GroundGridState.GetOriginalRoomHeight(7003, 0) == -1, "unrecorded room with non-positive height should return -1");
     }
 
     private static void GroundGridStringKeyCache()
