@@ -26,6 +26,10 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<string> itemTypeMultipliers = null!;
     private static MelonPreferences_Entry<int> groundGridExtraColumns = null!;
     private static MelonPreferences_Entry<int> groundGridExtraRows = null!;
+    private static MelonPreferences_Entry<bool> quotaModeEnabled = null!;
+    private static MelonPreferences_Entry<string> dropTypeShares = null!;
+    private static MelonPreferences_Entry<int> lowTierShare = null!;
+    private static MelonPreferences_Entry<int> highValueFloor = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -109,6 +113,38 @@ public sealed class Mod : MelonMod
             9,
             "Ground grid extra rows",
             "Rows added to the dumping-grounds ground grid height. 0 keeps the vanilla height.",
+            false,
+            false,
+            null);
+        quotaModeEnabled = category.CreateEntry<bool>(
+            "QuotaModeEnabled",
+            true,
+            "Enable drop type quota mode",
+            "true: drop rates follow DropTypeShares quotas. false: legacy multiplier logic.",
+            false,
+            false,
+            null);
+        dropTypeShares = category.CreateEntry<string>(
+            "DropTypeShares",
+            "MODULE:25,TOOL:25,FOOD:10,ALCOHOL:10,MEDICAL:5,MATERIAL:5,WEAPON:5",
+            "High-tier drop type shares (percent)",
+            "Percent of high-tier drops per item type. Items match the first type listed here. Empty buckets redistribute within the high tier.",
+            false,
+            false,
+            null);
+        lowTierShare = category.CreateEntry<int>(
+            "LowTierShare",
+            15,
+            "Low-tier drops percent",
+            "Percent of all drops for items below HighValueFloor (above the junk cutoff).",
+            false,
+            false,
+            null);
+        highValueFloor = category.CreateEntry<int>(
+            "HighValueFloor",
+            60,
+            "High value floor",
+            "Items worth at least this much belong to the high-value quota tier.",
             false,
             false,
             null);
@@ -268,6 +304,9 @@ public sealed class Mod : MelonMod
     private static double HighValueMultiplier => Math.Max(1.0, highValueMultiplier.Value);
     private static int GroundGridExtraColumns => Math.Max(0, groundGridExtraColumns.Value);
     private static int GroundGridExtraRows => Math.Max(0, groundGridExtraRows.Value);
+    private static bool QuotaModeEnabled => quotaModeEnabled.Value;
+    private static int LowTierShare => Math.Clamp(lowTierShare.Value, 0, 100);
+    private static int HighValueFloor => Math.Max(1, highValueFloor.Value);
     private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void ParseItemTypeMultipliers()
@@ -1302,6 +1341,8 @@ public sealed class Mod : MelonMod
                     }
                 }
 
+                if (!QuotaModeEnabled)
+                {
                 var highValueThreshold = (long)(overallMaxValue * 0.6);
                 for (var tableIndex = 0; tableIndex < tableEntries.Count; tableIndex++)
                 {
@@ -1372,6 +1413,7 @@ public sealed class Mod : MelonMod
                         }
                     }
                 }
+                }
 
                 // 第三步：收集所有物品用于内层权重调整
                 var ids = new List<string>();
@@ -1422,6 +1464,68 @@ public sealed class Mod : MelonMod
 
                 if (ids.Count == 0)
                 {
+                    return;
+                }
+
+                if (QuotaModeEnabled)
+                {
+                    var quotaShares = DropSharing.ComputeShares(
+                        ids,
+                        values,
+                        id => ResolveItemTypes(id, itemToTableName.TryGetValue(id, out var tn) ? tn : null),
+                        dropTypeShares.Value,
+                        LowTierShare,
+                        HighValueFloor);
+
+                    for (var index = 0; index < itemEntries.Count; index++)
+                    {
+                        var itemEntry = itemEntries[index];
+                        __state.RestoreActions.Add(new Action<int>(w => itemEntry.m_BaseProbability = w / 10000f));
+                        __state.OriginalWeights.Add((int)Math.Round(itemEntry.m_BaseProbability * 10000f));
+                        itemEntry.m_BaseProbability = quotaShares.SharesBp[index] / 10000f;
+                        if (quotaShares.SharesBp[index] > 0)
+                        {
+                            __state.AdjustedEntries++;
+                        }
+                    }
+
+                    var cursor = 0;
+                    for (var tableIndex = 0; tableIndex < tableEntries.Count; tableIndex++)
+                    {
+                        var tableEntry = tableEntries[tableIndex];
+                        var tableShareBp = 0;
+                        for (var k = 0; k < tableItemCounts[tableIndex]; k++)
+                        {
+                            tableShareBp += quotaShares.SharesBp[cursor + k];
+                        }
+
+                        cursor += tableItemCounts[tableIndex];
+                        if (tableEntry == null)
+                        {
+                            continue;
+                        }
+
+                        __state.RestoreActions.Add(new Action<int>(w => tableEntry.m_BaseProbability = w / 10000f));
+                        __state.OriginalWeights.Add((int)Math.Round(tableEntry.m_BaseProbability * 10000f));
+                        tableEntry.m_BaseProbability = tableShareBp / 10000f;
+                        __state.AdjustedEntries++;
+                    }
+
+                    if (LoggedWeightTables.Add(tableGroupID))
+                    {
+                        foreach (var line in quotaShares.Diagnostics)
+                        {
+                            MelonLogger.Msg("ScavengingTweaks {0}", line);
+                        }
+
+                        MelonLogger.Msg(
+                            "ScavengingTweaks quota distribution applied: group={0}, items={1}, lowTier={2}%, highFloor={3}.",
+                            tableGroupID,
+                            itemEntries.Count,
+                            LowTierShare,
+                            HighValueFloor);
+                    }
+
                     return;
                 }
 
@@ -1691,6 +1795,46 @@ public sealed class Mod : MelonMod
                 RestoreTableWeights(__state);
             }
             return __exception;
+        }
+
+        private static IReadOnlyList<string> ResolveItemTypes(string itemId, string? tableName)
+        {
+            if (itemIdToTypes.TryGetValue(itemId, out var cached))
+            {
+                return cached;
+            }
+
+            var types = new List<string>();
+            try
+            {
+                var item = DirectoryMaster.Item(itemId, false);
+                if (item?.itemTypes != null)
+                {
+                    for (var i = 0; i < item.itemTypes.Count; i++)
+                    {
+                        var type = item.itemTypes[i];
+                        if (!string.IsNullOrWhiteSpace(type))
+                        {
+                            types.Add(type.Trim().ToUpperInvariant());
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            if (types.Count == 0 && !string.IsNullOrWhiteSpace(tableName))
+            {
+                var inferred = InferTypesFromTableName(tableName);
+                if (inferred != null)
+                {
+                    types.AddRange(inferred);
+                }
+            }
+
+            itemIdToTypes[itemId] = types;
+            return types;
         }
 
         private static void RestoreAllPendingWeights()
