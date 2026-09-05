@@ -545,12 +545,27 @@ public sealed class Mod : MelonMod
         var scaledHeight = (int)Math.Round(windowHeightBefore * (double)target / originalRows);
         window.ResizePixels(windowWidthBefore, scaledHeight);
         window.Validate();
-        try
+
+        // 窗口默认锚定左上、向下生长，会超出面板底部可视区；
+        // 改为保持底边/右边原位，把窗口整体上移/左移，让新增行数向上展开。
+        var rectTransform = window.rectTransform;
+        if (rectTransform != null)
         {
-            PixelWindow.ReclampDockedWindows();
-        }
-        catch
-        {
+            var heightGrew = scaledHeight - windowHeightBefore;
+            var widthGrew = window.widthPixels - windowWidthBefore;
+            if (heightGrew != 0 || widthGrew != 0)
+            {
+                var anchoredBefore = rectTransform.anchoredPosition;
+                rectTransform.anchoredPosition = new UnityEngine.Vector2(
+                    anchoredBefore.x - widthGrew,
+                    anchoredBefore.y + heightGrew);
+                MelonLogger.Msg(
+                    "ScavengingTweaks ground window moved: anchored {0} -> {1}, rect {2}x{3}.",
+                    anchoredBefore,
+                    rectTransform.anchoredPosition,
+                    rectTransform.rect.width,
+                    rectTransform.rect.height);
+            }
         }
 
         MelonLogger.Msg(
