@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="..\ScavengingTweaks\LootWeighting.cs" Link="LootWeighting.cs" />
+    <Compile Include="..\ScavengingTweaks\GroundGrid.cs" Link="GroundGrid.cs" />
     <Compile Include="..\ScavengingTweaks\ScavengingCounter.cs" Link="ScavengingCounter.cs" />
   </ItemGroup>
 </Project>
