@@ -30,6 +30,7 @@ public sealed class Mod : MelonMod
     private static MelonPreferences_Entry<string> dropTypeShares = null!;
     private static MelonPreferences_Entry<int> lowTierShare = null!;
     private static MelonPreferences_Entry<int> highValueFloor = null!;
+    private static MelonPreferences_Entry<int> doubleLootChance = null!;
     private static Dictionary<string, float> parsedTypeMultipliers = new();
     private static Dictionary<string, List<string>> itemIdToTypes = new(); // itemId -> list of type names
     private static bool counterMigrationChecked;
@@ -145,6 +146,14 @@ public sealed class Mod : MelonMod
             60,
             "High value floor",
             "Items worth at least this much belong to the high-value quota tier.",
+            false,
+            false,
+            null);
+        doubleLootChance = category.CreateEntry<int>(
+            "DoubleLootChance",
+            100,
+            "Double loot chance (percent)",
+            "Chance to append a bonus item (satchel/mouse trap) when the vanilla double loot did not trigger. -1 keeps vanilla behavior.",
             false,
             false,
             null);
@@ -307,6 +316,9 @@ public sealed class Mod : MelonMod
     private static bool QuotaModeEnabled => quotaModeEnabled.Value;
     private static int LowTierShare => Math.Clamp(lowTierShare.Value, 0, 100);
     private static int HighValueFloor => Math.Max(1, highValueFloor.Value);
+    private static int DoubleLootChance => Math.Clamp(doubleLootChance.Value, -1, 100);
+    private static readonly System.Random lootRandom = new();
+    private static readonly string[] DoubleLootBonusIds = { "satchel", "mouse_trap" };
     private static bool BlockAllWounds => string.Equals(woundBlockMode.Value, "Always", StringComparison.OrdinalIgnoreCase);
 
     private static void ParseItemTypeMultipliers()
@@ -1003,6 +1015,8 @@ public sealed class Mod : MelonMod
             }
 
             MelonLogger.Msg("ScavengingTweaks scavenge result: drops={0}.", count);
+            TryAppendDoubleLootBonus(__result);
+            count = __result?.Count ?? 0;
 
             // 记录每个拾取到的物品的详细信息
             if (__result != null && count > 0)
@@ -1241,6 +1255,67 @@ public sealed class Mod : MelonMod
                             MelonLogger.Msg("  ScavengingTweaks picked item #{0}: failed to inspect - {1}", i + 1, ex.Message);
                         }
                     }
+                    }
+                }
+            }
+
+        // 原版双倍掉落概率藏在 ScavHelper 的闭包字段里（无实例可改），
+        // 这里在结果列表上模拟：按配置概率补一件奖励物品（挎包/捕鼠夹）。
+        private static void TryAppendDoubleLootBonus(Il2CppSystem.Collections.Generic.List<GameItem>? result)
+        {
+            var chance = DoubleLootChance;
+            if (chance < 0 || result == null || result.Count == 0 || result.Count >= 2)
+            {
+                return;
+            }
+
+            if (lootRandom.Next(100) >= chance)
+            {
+                return;
+            }
+
+            var bonusId = DoubleLootBonusIds[lootRandom.Next(DoubleLootBonusIds.Length)];
+            try
+            {
+                var bonus = ItemSpawner.Spawn(bonusId);
+                if (bonus != null)
+                {
+                    result.Add(bonus);
+                    MelonLogger.Msg(
+                        "ScavengingTweaks double loot bonus: {0} (chance={1}%, value={2}).",
+                        bonusId,
+                        chance,
+                        TryGetBaseValue(bonusId, out var bonusValue) ? bonusValue : -1L);
+                    return;
+                }
+
+                MelonLogger.Warning("ScavengingTweaks double loot bonus spawn returned null: {0}.", bonusId);
+            }
+            catch (Exception exception)
+            {
+                MelonLogger.Warning("ScavengingTweaks double loot bonus failed for {0}: {1}", bonusId, exception.Message);
+            }
+
+            // 首选 ID 无效时尝试奖励池里的下一个
+            foreach (var fallbackId in DoubleLootBonusIds)
+            {
+                if (fallbackId == bonusId)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var fallback = ItemSpawner.Spawn(fallbackId);
+                    if (fallback != null)
+                    {
+                        result.Add(fallback);
+                        MelonLogger.Msg("ScavengingTweaks double loot bonus (fallback): {0}.", fallbackId);
+                        return;
+                    }
+                }
+                catch (Exception)
+                {
                 }
             }
         }
