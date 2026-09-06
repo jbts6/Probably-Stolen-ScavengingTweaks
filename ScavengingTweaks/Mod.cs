@@ -61,7 +61,7 @@ public sealed class Mod : MelonMod
             "HighValueMultiplier",
             2.0f,
             "High-value loot multiplier",
-            "Approximate weight multiplier for the most valuable half of the dump loot table.",
+            "Weight multiplier for the most valuable half of the dump loot table, rounded to a whole step (1.5 = 2x, 2.5 = 3x, capped at 32x); values at or below 1.0 keep the original weights.",
             false,
             false,
             null);

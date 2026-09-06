@@ -1,0 +1,11 @@
+{
+	"version": 1,
+	"ports": {"preview": 3000, "additional": {}},
+	"scripts": {
+		"setup": {"enabled": true, "command": "bash -lc 'command -v dotnet >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dotnet-sdk-8.0)'"},
+		"run": {"enabled": true, "command": null},
+		"archive": {"enabled": true, "command": null},
+		"check": {"enabled": true, "command": null}
+	},
+	"mcpServers": []
+}

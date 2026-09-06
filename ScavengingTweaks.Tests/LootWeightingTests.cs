@@ -16,6 +16,9 @@ internal static class LootWeightingTests
             UpgradeChanceMatchesConfiguredMultiplier();
             EffectiveValueUsesAvailableGameValues();
             MultiplierBelowOneDoesNotChangeEntries();
+            FractionalMultiplierRoundsToNearestWholeStep();
+            HugeMultiplierIsCappedAtMaxCopies();
+            EntriesWithoutResolvedValueParticipateInHighestValueHalf();
             ConfiguredRemainingAttemptsNeverGoNegative();
             LegacyInjectedCountIsDetected();
             GroundGridSettingHeightCachedOnFirstObservation();
@@ -122,6 +125,52 @@ internal static class LootWeightingTests
         Ensure(LootWeighting.GetEffectiveValue(0, 0, 120, 90, 0, 0) == 120, "the first nonzero game value source should not hide a higher fallback value");
         Ensure(LootWeighting.GetEffectiveValue(0, 240, 120, 90, 80, 70) == 240, "the effective value should use the largest available game value");
         Ensure(LootWeighting.GetEffectiveValue(0, 0, 0, 0, 0, 0) == 0, "missing game values should remain zero");
+    }
+
+    private static void FractionalMultiplierRoundsToNearestWholeStep()
+    {
+        var input = new[] { "a", "b" };
+        var values = new Dictionary<string, long> { ["a"] = 20, ["b"] = 10 };
+
+        var atOnePointFive = LootWeighting.ExpandHighValueEntries(input, values, 1.5);
+        Ensure(atOnePointFive.Count(id => id == "a") == 2, "1.5 should round up to a 2x multiplier");
+
+        var atTwoPointFive = LootWeighting.ExpandHighValueEntries(input, values, 2.5);
+        Ensure(atTwoPointFive.Count(id => id == "a") == 3, "2.5 should round up to a 3x multiplier");
+
+        var atTwoPointOne = LootWeighting.ExpandHighValueEntries(input, values, 2.1);
+        Ensure(atTwoPointOne.Count(id => id == "a") == 2, "2.1 should round down to a 2x multiplier");
+
+        var atOnePointFour = LootWeighting.ExpandHighValueEntries(input, values, 1.4);
+        Ensure(atOnePointFour.SequenceEqual(input), "1.4 should round down to a 1x multiplier");
+    }
+
+    private static void HugeMultiplierIsCappedAtMaxCopies()
+    {
+        var input = new[] { "a", "b" };
+        var values = new Dictionary<string, long> { ["a"] = 20, ["b"] = 10 };
+
+        var huge = LootWeighting.ExpandHighValueEntries(input, values, 1e20);
+        Ensure(huge.Count(id => id == "a") == 33, "an absurd multiplier must cap at 32 extra copies, not underflow to zero");
+
+        var aboveCap = LootWeighting.ExpandHighValueEntries(input, values, 35.0);
+        Ensure(aboveCap.Count(id => id == "a") == 33, "a multiplier above the cap must clamp to 32 extra copies");
+    }
+
+    private static void EntriesWithoutResolvedValueParticipateInHighestValueHalf()
+    {
+        var values = new Dictionary<string, long> { ["a"] = 100, ["b"] = 1 };
+
+        var mixed = LootWeighting.ExpandHighValueEntries(new[] { "a", "b", "unknown" }, values, 2.0);
+        Ensure(mixed.Count(id => id == "a") == 2, "resolved high-value entries should still be boosted");
+        Ensure(mixed.Count(id => id == "b") == 2, "unresolved entries must not displace resolved entries from the top half");
+        Ensure(mixed.Count(id => id == "unknown") == 1, "an unresolved entry should only fill the remaining top-half slot");
+
+        var allUnknown = LootWeighting.ExpandHighValueEntries(
+            new[] { "u1", "u2" },
+            new Dictionary<string, long>(),
+            2.0);
+        Ensure(allUnknown.Count(id => id == "u1") == 2, "the top half should still apply when no values can be resolved");
     }
 
     private static void ConfiguredRemainingAttemptsNeverGoNegative()
